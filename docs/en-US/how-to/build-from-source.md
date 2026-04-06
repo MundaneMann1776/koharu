@@ -40,15 +40,6 @@ The repository's `scripts/dev.ts` helper tries to discover `nvcc` and `cl.exe` a
 bun install
 ```
 
-For the current Candle patch set, keep the patched Candle fork checked out at `temp/candle`.
-
-```bash
-git clone --depth 1 --branch cuda-dynamic-loading https://github.com/mayocream/candle temp/candle
-git -C temp/candle apply ../../scripts/patches/candle-zluda.patch
-```
-
-If you are working on the Windows AMD runtime bundle itself, keep ZLUDA checked out at `temp/zluda` as well.
-
 ## Recommended desktop build
 
 ```bash

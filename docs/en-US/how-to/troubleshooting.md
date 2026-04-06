@@ -74,13 +74,13 @@ If downloads keep failing, test on a different network first. That is the fastes
 
 ## Koharu falls back to CPU even though you have an NVIDIA GPU
 
-This is expected when Koharu cannot confirm support for CUDA 13.0.
+This is expected when Koharu cannot confirm support for CUDA 13.1.
 
 The current runtime behavior is:
 
 - detect an NVIDIA driver
 - query driver compatibility
-- continue on CUDA only when the driver reports CUDA 13.0 support
+- continue on CUDA only when the driver reports CUDA 13.1 support
 - otherwise fall back to CPU
 
 Try this:
@@ -90,25 +90,6 @@ Try this:
 3. verify behavior with `--debug`
 
 If the driver is old or the CUDA check fails, Koharu deliberately prefers CPU over a partially working CUDA configuration.
-
-## Windows AMD ZLUDA acceleration does not activate
-
-The Windows AMD path has stricter requirements than the NVIDIA one.
-
-Current expectations:
-
-- Koharu has to download and stage its managed ZLUDA bundle successfully
-- the AMD HIP SDK must already be installed locally
-- Koharu must be able to validate `nvcuda`, `cublas64_13`, `cublasLt64_13`, and `cufft64_12` through that staged ZLUDA runtime
-
-What to check:
-
-1. start once with `--download` so the managed runtime files are fetched
-2. verify that the HIP SDK is installed and `HIP_PATH` points at it when needed
-3. start again with `--debug` and look for missing HIP, missing ZLUDA files, or failed ZLUDA library initialization
-4. remember that only `comic-text-bubble-detector`, `comic-text-detector`, `comic-text-detector-seg`, and `aot-inpainting` use ZLUDA in this release
-
-If ZLUDA validation fails, Koharu still remains usable. Unsupported Candle models fall back to CPU and llama.cpp continues on Vulkan.
 
 ## OCR, inpainting, or export says something is missing
 
