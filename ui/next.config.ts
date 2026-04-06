@@ -9,6 +9,7 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     proxyClientMaxBodySize: '1gb',
+    proxyTimeout: 120_000,
   },
   async rewrites() {
     return [

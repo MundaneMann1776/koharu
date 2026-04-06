@@ -1,6 +1,5 @@
 use clap::{Parser, ValueEnum};
 use koharu_ml::paddleocr_vl::{PaddleOcrVl, PaddleOcrVlOutput, PaddleOcrVlTask};
-use koharu_runtime::{ComputePolicy, RuntimeManager, default_app_data_root};
 
 #[path = "common.rs"]
 mod common;
@@ -61,18 +60,12 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let task: PaddleOcrVlTask = cli.task.into();
-    let runtime = RuntimeManager::new(
-        default_app_data_root(),
-        if cli.cpu {
-            ComputePolicy::CpuOnly
-        } else {
-            ComputePolicy::PreferGpu
-        },
-    )?;
+    let runtime = common::prepare_runtime(cli.cpu).await?;
+    let cpu = common::effective_cpu(&runtime, cli.cpu, "paddleocr-vl-candle")?;
     let mut model = if let Some(model_dir) = &cli.model_dir {
-        PaddleOcrVl::load_from_dir(model_dir, cli.cpu)?
+        PaddleOcrVl::load_from_dir_with_runtime(&runtime, model_dir, cpu)?
     } else {
-        PaddleOcrVl::load(&runtime, cli.cpu).await?
+        PaddleOcrVl::load(&runtime, cpu).await?
     };
 
     let images = cli

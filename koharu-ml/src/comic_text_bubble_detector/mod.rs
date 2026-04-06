@@ -1,6 +1,6 @@
 mod model;
 
-use std::{collections::BTreeMap, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
 use anyhow::{Context, Result, bail};
 use image::{DynamicImage, GenericImageView, imageops::FilterType};
@@ -9,7 +9,7 @@ use koharu_runtime::RuntimeManager;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
-use crate::{Device, device, loading};
+use crate::{Device, download_huggingface_files, load_runtime_model, loading};
 
 use self::model::{RTDetrV2ForObjectDetection, RTDetrV2Outputs};
 
@@ -48,24 +48,50 @@ pub struct ComicTextBubbleDetector {
     slicer: ImageSlicer,
 }
 
+struct ModelFiles {
+    config: PathBuf,
+    preprocessor: PathBuf,
+    weights: PathBuf,
+}
+
+impl ModelFiles {
+    async fn download(runtime: &RuntimeManager) -> Result<Self> {
+        let [config, preprocessor, weights] = download_huggingface_files(
+            runtime,
+            HF_REPO,
+            [
+                "config.json",
+                "preprocessor_config.json",
+                "model.safetensors",
+            ],
+        )
+        .await?;
+        Ok(Self {
+            config,
+            preprocessor,
+            weights,
+        })
+    }
+}
+
 impl ComicTextBubbleDetector {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
-        let device = device(cpu)?;
-        let downloads = runtime.downloads();
-        let config_path = downloads.huggingface_model(HF_REPO, "config.json").await?;
-        let preprocessor_path = downloads
-            .huggingface_model(HF_REPO, "preprocessor_config.json")
-            .await?;
-        let weights_path = downloads
-            .huggingface_model(HF_REPO, "model.safetensors")
-            .await?;
+        load_runtime_model(
+            runtime,
+            cpu,
+            ModelFiles::download(runtime),
+            Self::load_from_files,
+        )
+        .await
+    }
 
-        let config = loading::read_json::<RTDetrV2Config>(&config_path)
-            .with_context(|| format!("failed to parse {}", config_path.display()))?;
+    fn load_from_files(files: ModelFiles, device: Device) -> Result<Self> {
+        let config = loading::read_json::<RTDetrV2Config>(&files.config)
+            .with_context(|| format!("failed to parse {}", files.config.display()))?;
         config.validate()?;
-        let preprocessor = loading::read_json::<RTDetrImageProcessorConfig>(&preprocessor_path)
-            .with_context(|| format!("failed to parse {}", preprocessor_path.display()))?;
-        let model = loading::load_mmaped_safetensors_path(&weights_path, &device, |vb| {
+        let preprocessor = loading::read_json::<RTDetrImageProcessorConfig>(&files.preprocessor)
+            .with_context(|| format!("failed to parse {}", files.preprocessor.display()))?;
+        let model = loading::load_mmaped_safetensors_path(&files.weights, &device, |vb| {
             RTDetrV2ForObjectDetection::load(vb, &config)
         })?;
 

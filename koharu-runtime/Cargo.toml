@@ -33,6 +33,7 @@ url = { workspace = true }
 libloading = { workspace = true }
 flate2 = { workspace = true }
 tar = "0.4"
+strum = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true }

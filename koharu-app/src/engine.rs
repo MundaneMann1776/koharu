@@ -491,7 +491,11 @@ inventory::submit! {
         needs: &[],
         produces: &[Artifact::TextBlocks],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::pp_doclayout_v3::PPDocLayoutV3::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let m = koharu_ml::pp_doclayout_v3::PPDocLayoutV3::load(
+                &res.runtime,
+                res.candle_uses_cpu("pp-doclayout-v3"),
+            )
+            .await?;
             Ok(Box::new(PpDocLayoutEngine(m)) as Box<dyn Engine>)
         }),
     }
@@ -539,7 +543,11 @@ inventory::submit! {
         needs: &[],
         produces: &[Artifact::TextBlocks, Artifact::Segment],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::comic_text_detector::ComicTextDetector::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let m = koharu_ml::comic_text_detector::ComicTextDetector::load(
+                &res.runtime,
+                res.candle_uses_cpu("comic-text-detector"),
+            )
+            .await?;
             Ok(Box::new(CtdFullEngine(m)) as Box<dyn Engine>)
         }),
     }
@@ -587,7 +595,11 @@ inventory::submit! {
         needs: &[Artifact::TextBlocks],
         produces: &[Artifact::Segment],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::comic_text_detector::ComicTextDetector::load_segmentation_only(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let m = koharu_ml::comic_text_detector::ComicTextDetector::load_segmentation_only(
+                &res.runtime,
+                res.candle_uses_cpu("comic-text-detector-seg"),
+            )
+            .await?;
             Ok(Box::new(CtdSegmentEngine(m)) as Box<dyn Engine>)
         }),
     }
@@ -648,7 +660,7 @@ inventory::submit! {
         load: |res| Box::pin(async move {
             let m = koharu_ml::comic_text_bubble_detector::ComicTextBubbleDetector::load(
                 &res.runtime,
-                matches!(res.device, koharu_ml::Device::Cpu),
+                res.candle_uses_cpu("comic-text-bubble-detector"),
             ).await?;
             Ok(Box::new(ComicTextBubbleDetectorEngine(m)) as Box<dyn Engine>)
         }),
@@ -702,7 +714,7 @@ inventory::submit! {
         load: |res| Box::pin(async move {
             let m = koharu_ml::speech_bubble_segmentation::SpeechBubbleSegmentation::load(
                 &res.runtime,
-                matches!(res.device, koharu_ml::Device::Cpu),
+                res.candle_uses_cpu("speech-bubble-segmentation"),
             ).await?;
             Ok(Box::new(SpeechBubbleSegEngine(m)) as Box<dyn Engine>)
         }),
@@ -758,7 +770,11 @@ inventory::submit! {
         needs: &[Artifact::TextBlocks],
         produces: &[Artifact::FontPredictions],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::font_detector::FontDetector::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let m = koharu_ml::font_detector::FontDetector::load(
+                &res.runtime,
+                res.candle_uses_cpu("yuzumarker-font-detection"),
+            )
+            .await?;
             Ok(Box::new(FontDetectEngine(m)) as Box<dyn Engine>)
         }),
     }
@@ -818,7 +834,12 @@ inventory::submit! {
         produces: &[Artifact::OcrText],
         load: |res| Box::pin(async move {
             let backend = res.llm.backend();
-            let m = koharu_llm::paddleocr_vl::PaddleOcrVl::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu), backend).await?;
+            let m = koharu_llm::paddleocr_vl::PaddleOcrVl::load(
+                &res.runtime,
+                res.llm_uses_cpu(),
+                backend,
+            )
+            .await?;
             Ok(Box::new(PaddleOcrEngine(std::sync::Mutex::new(m))) as Box<dyn Engine>)
         }),
     }
@@ -866,7 +887,11 @@ inventory::submit! {
         needs: &[Artifact::TextBlocks],
         produces: &[Artifact::OcrText],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::manga_ocr::MangaOcr::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let m = koharu_ml::manga_ocr::MangaOcr::load(
+                &res.runtime,
+                res.candle_uses_cpu("manga-ocr"),
+            )
+            .await?;
             Ok(Box::new(MangaOcrEngine(m)) as Box<dyn Engine>)
         }),
     }
@@ -910,7 +935,11 @@ inventory::submit! {
         needs: &[Artifact::TextBlocks],
         produces: &[Artifact::OcrText],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::mit48px_ocr::Mit48pxOcr::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let m = koharu_ml::mit48px_ocr::Mit48pxOcr::load(
+                &res.runtime,
+                res.candle_uses_cpu("mit48px-ocr"),
+            )
+            .await?;
             Ok(Box::new(Mit48pxOcrEngine(m)) as Box<dyn Engine>)
         }),
     }
@@ -1000,7 +1029,11 @@ inventory::submit! {
         needs: &[Artifact::Segment],
         produces: &[Artifact::Inpainted],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::lama::Lama::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let m = koharu_ml::lama::Lama::load(
+                &res.runtime,
+                res.candle_uses_cpu("lama-manga"),
+            )
+            .await?;
             Ok(Box::new(LamaInpaintEngine(m)) as Box<dyn Engine>)
         }),
     }
@@ -1049,7 +1082,7 @@ inventory::submit! {
         load: |res| Box::pin(async move {
             let m = koharu_ml::aot_inpainting::AotInpainting::load(
                 &res.runtime,
-                matches!(res.device, koharu_ml::Device::Cpu),
+                res.candle_uses_cpu("aot-inpainting"),
             ).await?;
             Ok(Box::new(AotInpaintEngine(m)) as Box<dyn Engine>)
         }),

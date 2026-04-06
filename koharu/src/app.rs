@@ -6,9 +6,11 @@ use tokio::{net::TcpListener, sync::RwLock};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use koharu_app::{AppResources, config as app_config, engine, llm, storage::Storage};
+use koharu_app::{
+    AppResources, acceleration::ModelAccelerationPolicy, config as app_config, engine, llm,
+    storage::Storage,
+};
 use koharu_llm::safe::llama_backend::LlamaBackend;
-use koharu_ml::{Device, device};
 use koharu_rpc::{SharedState, server};
 use koharu_runtime::{ComputePolicy, RuntimeHttpConfig, RuntimeManager};
 
@@ -39,8 +41,11 @@ async fn build_resources(
         .await
         .context("Failed to prepare runtime")?;
 
-    let selected_device = device(cpu)?;
-    let cpu = matches!(&selected_device, Device::Cpu);
+    let gpu_backend = if cpu {
+        koharu_runtime::GpuBackend::Cpu
+    } else {
+        runtime.gpu_backend()
+    };
 
     #[cfg(target_os = "windows")]
     crate::windows::register_khr().ok();
@@ -50,7 +55,11 @@ async fn build_resources(
     let backend = Arc::new(LlamaBackend::init().context("failed to init llama backend")?);
     koharu_llm::suppress_native_logs();
 
-    let llm = Arc::new(llm::Model::new(runtime.clone(), cpu, backend));
+    let llm = Arc::new(llm::Model::new(
+        runtime.clone(),
+        !gpu_backend.uses_gpu(),
+        backend,
+    ));
     let storage = Arc::new(Storage::open(data_root.as_std_path())?);
     let registry = Arc::new(engine::Registry::new());
     let config = app_config::load().unwrap_or_default();
@@ -61,7 +70,8 @@ async fn build_resources(
         registry,
         config: Arc::new(RwLock::new(config)),
         llm,
-        device: selected_device,
+        gpu_backend,
+        model_acceleration: ModelAccelerationPolicy::new(gpu_backend),
         pipeline: Arc::new(RwLock::new(None)),
         version: crate::version::current(),
     })

@@ -3,13 +3,14 @@ use libloading::Library;
 use serde::Deserialize;
 use std::fmt;
 
+use crate::GpuBackend;
 use crate::Runtime;
 use crate::archive::{self, ArchiveKind, ExtractPolicy};
 use crate::install::InstallState;
 use crate::loader::{add_runtime_search_path, preload_library};
 
 const CUDA_SUCCESS: i32 = 0;
-const CUDA_13_1_DRIVER_VERSION: i32 = 13010;
+const CUDA_13_0_DRIVER_VERSION: i32 = 13000;
 const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: i32 = 75;
 const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR: i32 = 76;
 const MIN_COMPUTE_CAPABILITY: (i32, i32) = (7, 5); // Turing (RTX 20xx) and above
@@ -18,6 +19,12 @@ type CuInit = unsafe extern "C" fn(flags: u32) -> i32;
 type CuDriverGetVersion = unsafe extern "C" fn(driver_version: *mut i32) -> i32;
 type CuDeviceGet = unsafe extern "C" fn(device: *mut i32, ordinal: i32) -> i32;
 type CuDeviceGetAttribute = unsafe extern "C" fn(pi: *mut i32, attrib: i32, dev: i32) -> i32;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NvidiaBackendInfo {
+    driver_version: CudaDriverVersion,
+    compute_capability: (i32, i32),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CudaDriverVersion {
@@ -44,7 +51,7 @@ struct WheelSpec {
 
 const WHEELS: &[WheelSpec] = &[
     WheelSpec {
-        package: "nvidia-cuda-runtime/13.1.80",
+        package: "nvidia-cuda-runtime/13.0.96",
         windows_dylibs: &["cudart64_13.dll"],
         linux_dylibs: &["libcudart.so.13"],
     },
@@ -82,8 +89,8 @@ impl CudaDriverVersion {
         (self.raw % 1000) / 10
     }
 
-    pub const fn supports_cuda_13_1(self) -> bool {
-        self.raw >= CUDA_13_1_DRIVER_VERSION
+    pub const fn supports_cuda_13_0(self) -> bool {
+        self.raw >= CUDA_13_0_DRIVER_VERSION
     }
 }
 
@@ -183,66 +190,32 @@ pub fn compute_capability() -> Result<(i32, i32)> {
     }
 }
 
-/// Check whether the installed NVIDIA driver supports CUDA 13.1+.
+/// Check whether the installed NVIDIA driver supports CUDA 13.0+.
 ///
 /// Returns `true` when GPU compute should be used, `false` when the caller
 /// should fall back to CPU.  Warnings are emitted via `tracing::warn!`.
 pub fn check_cuda_driver_support() -> bool {
-    if !driver_library_available() {
-        return false;
-    }
-
-    // Check driver version
-    match driver_version() {
-        Ok(version) if version.supports_cuda_13_1() => {
-            tracing::info!("NVIDIA driver reports CUDA {version} support");
-        }
-        Ok(version) => {
-            tracing::warn!(
-                "NVIDIA driver only supports CUDA {version}; \
-                 falling back to CPU. Update your NVIDIA driver to a version \
-                 that supports CUDA 13.1 or newer to enable GPU acceleration."
+    match backend_info() {
+        Ok(info) => {
+            tracing::info!("NVIDIA driver reports CUDA {} support", info.driver_version);
+            tracing::info!(
+                "GPU compute capability: {}.{}",
+                info.compute_capability.0,
+                info.compute_capability.1
             );
-            return false;
-        }
-        Err(err) => {
-            tracing::warn!(
-                "Could not verify NVIDIA driver support for CUDA 13.1: {err:#}; \
-                 falling back to CPU."
-            );
-            return false;
-        }
-    }
-
-    // Check GPU compute capability (need >= 7.5 / Turing)
-    match compute_capability() {
-        Ok((major, minor)) if (major, minor) >= MIN_COMPUTE_CAPABILITY => {
-            tracing::info!("GPU compute capability: {major}.{minor}");
             true
         }
-        Ok((major, minor)) => {
-            tracing::warn!(
-                "GPU compute capability {major}.{minor} is below the minimum \
-                 required {}.{}; falling back to CPU. A Turing (RTX 20xx) or \
-                 newer GPU is required for GPU acceleration.",
-                MIN_COMPUTE_CAPABILITY.0,
-                MIN_COMPUTE_CAPABILITY.1,
-            );
-            false
-        }
         Err(err) => {
-            tracing::warn!("Could not query GPU compute capability: {err:#}; falling back to CPU.");
+            tracing::warn!(
+                "Could not enable the NVIDIA CUDA backend: {err:#}; falling back to CPU."
+            );
             false
         }
     }
 }
 
 pub(crate) fn package_enabled(runtime: &Runtime) -> bool {
-    runtime.wants_gpu()
-        && driver_library_available()
-        && driver_version()
-            .map(|version| version.supports_cuda_13_1())
-            .unwrap_or(false)
+    runtime.wants_gpu() && runtime.gpu_backend() == GpuBackend::CudaNvidia
 }
 
 pub(crate) fn package_present(runtime: &Runtime) -> Result<bool> {
@@ -314,6 +287,37 @@ crate::declare_native_package!(
 struct WheelAsset {
     url: String,
     filename: String,
+}
+
+pub(crate) fn backend_info() -> Result<NvidiaBackendInfo> {
+    if !driver_library_available() {
+        bail!("NVIDIA driver library not found");
+    }
+
+    let driver_version =
+        driver_version().context("failed to query the installed NVIDIA driver version")?;
+    if !driver_version.supports_cuda_13_0() {
+        bail!(
+            "NVIDIA driver only supports CUDA {driver_version}; install a driver with CUDA 13.0 or newer support"
+        );
+    }
+
+    let compute_capability =
+        compute_capability().context("failed to query the active GPU compute capability")?;
+    if compute_capability < MIN_COMPUTE_CAPABILITY {
+        bail!(
+            "GPU compute capability {}.{} is below the minimum required {}.{}",
+            compute_capability.0,
+            compute_capability.1,
+            MIN_COMPUTE_CAPABILITY.0,
+            MIN_COMPUTE_CAPABILITY.1,
+        );
+    }
+
+    Ok(NvidiaBackendInfo {
+        driver_version,
+        compute_capability,
+    })
 }
 
 fn driver_library_available() -> bool {
@@ -446,17 +450,17 @@ mod tests {
 
     #[test]
     fn parses_major_minor_from_driver_version() {
-        let version = CudaDriverVersion::from_raw(13010);
+        let version = CudaDriverVersion::from_raw(13000);
         assert_eq!(version.major(), 13);
-        assert_eq!(version.minor(), 1);
-        assert_eq!(version.to_string(), "13.1");
+        assert_eq!(version.minor(), 0);
+        assert_eq!(version.to_string(), "13.0");
     }
 
     #[test]
-    fn checks_cuda_13_1_threshold() {
-        assert!(CudaDriverVersion::from_raw(13010).supports_cuda_13_1());
-        assert!(CudaDriverVersion::from_raw(13020).supports_cuda_13_1());
-        assert!(!CudaDriverVersion::from_raw(13000).supports_cuda_13_1());
-        assert!(!CudaDriverVersion::from_raw(12080).supports_cuda_13_1());
+    fn checks_cuda_13_0_threshold() {
+        assert!(CudaDriverVersion::from_raw(13000).supports_cuda_13_0());
+        assert!(CudaDriverVersion::from_raw(13010).supports_cuda_13_0());
+        assert!(!CudaDriverVersion::from_raw(12990).supports_cuda_13_0());
+        assert!(!CudaDriverVersion::from_raw(12080).supports_cuda_13_0());
     }
 }

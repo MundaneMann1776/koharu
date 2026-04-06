@@ -49,7 +49,7 @@ impl FontDetector {
         cpu: bool,
         kind: ModelKind,
     ) -> Result<Self> {
-        let device = device(cpu)?;
+        let device = device(runtime, cpu)?;
         let downloads = runtime.downloads();
         let weights_path = downloads
             .huggingface_model(HF_REPO, "yuzumarker-font-detection.safetensors")

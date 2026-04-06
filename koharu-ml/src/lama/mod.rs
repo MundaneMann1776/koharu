@@ -52,7 +52,7 @@ pub struct Lama {
 
 impl Lama {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
-        let device = device(cpu)?;
+        let device = device(runtime, cpu)?;
         let weights_path = runtime
             .downloads()
             .huggingface_model(HF_REPO, "lama-manga.safetensors")

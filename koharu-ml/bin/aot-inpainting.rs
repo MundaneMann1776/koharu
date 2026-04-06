@@ -1,7 +1,6 @@
 use anyhow::{Result, bail};
 use clap::Parser;
 use koharu_ml::aot_inpainting::AotInpainting;
-use koharu_runtime::{ComputePolicy, RuntimeManager, default_app_data_root};
 
 #[path = "common.rs"]
 mod common;
@@ -35,20 +34,14 @@ async fn main() -> Result<()> {
     common::init_tracing();
 
     let cli = Cli::parse();
-    let runtime = RuntimeManager::new(
-        default_app_data_root(),
-        if cli.cpu {
-            ComputePolicy::CpuOnly
-        } else {
-            ComputePolicy::PreferGpu
-        },
-    )?;
+    let runtime = common::prepare_runtime(cli.cpu).await?;
+    let cpu = common::effective_cpu(&runtime, cli.cpu, "aot-inpainting")?;
 
     let model = match (&cli.config_path, &cli.weights_path) {
         (Some(config_path), Some(weights_path)) => {
-            AotInpainting::load_from_paths(config_path, weights_path, cli.cpu)?
+            AotInpainting::load_from_paths_with_runtime(&runtime, config_path, weights_path, cpu)?
         }
-        (None, None) => AotInpainting::load(&runtime, cli.cpu).await?,
+        (None, None) => AotInpainting::load(&runtime, cpu).await?,
         _ => bail!("--config-path and --weights-path must be provided together"),
     };
 

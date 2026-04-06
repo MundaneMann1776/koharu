@@ -16,9 +16,9 @@ use serde::Deserialize;
 use tracing::instrument;
 
 use crate::{
-    device,
+    download_huggingface_files,
     inpainting::{binarize_mask, extract_alpha, restore_alpha_channel},
-    loading,
+    load_runtime_model, load_with_device, loading,
 };
 
 use self::model::{AotGenerator, AotModelSpec};
@@ -113,8 +113,15 @@ impl AotInpaintingConfig {
 
 impl AotInpainting {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
-        let (config_path, weights_path) = resolve_model_paths(runtime).await?;
-        Self::load_from_paths(&config_path, &weights_path, cpu)
+        load_runtime_model(
+            runtime,
+            cpu,
+            resolve_model_paths(runtime),
+            |(config_path, weights_path), device| {
+                Self::load_from_paths_impl(&config_path, &weights_path, device)
+            },
+        )
+        .await
     }
 
     pub fn load_from_paths(
@@ -122,7 +129,27 @@ impl AotInpainting {
         weights_path: impl AsRef<Path>,
         cpu: bool,
     ) -> Result<Self> {
-        let device = device(cpu)?;
+        load_with_device(None, cpu, |device| {
+            Self::load_from_paths_impl(config_path, weights_path, device)
+        })
+    }
+
+    pub fn load_from_paths_with_runtime(
+        runtime: &RuntimeManager,
+        config_path: impl AsRef<Path>,
+        weights_path: impl AsRef<Path>,
+        cpu: bool,
+    ) -> Result<Self> {
+        load_with_device(Some(runtime), cpu, |device| {
+            Self::load_from_paths_impl(config_path, weights_path, device)
+        })
+    }
+
+    fn load_from_paths_impl(
+        config_path: impl AsRef<Path>,
+        weights_path: impl AsRef<Path>,
+        device: Device,
+    ) -> Result<Self> {
         let config = loading::read_json::<AotInpaintingConfig>(config_path.as_ref())
             .with_context(|| format!("failed to parse {}", config_path.as_ref().display()))?;
         config.validate()?;
@@ -312,15 +339,10 @@ pub async fn prefetch(runtime: &RuntimeManager) -> Result<()> {
 }
 
 async fn resolve_model_paths(runtime: &RuntimeManager) -> Result<(PathBuf, PathBuf)> {
-    let downloads = runtime.downloads();
-    let config = downloads
-        .huggingface_model(HF_REPO, CONFIG_FILENAME)
-        .await
-        .with_context(|| format!("failed to download {CONFIG_FILENAME} from {HF_REPO}"))?;
-    let weights = downloads
-        .huggingface_model(HF_REPO, SAFETENSORS_FILENAME)
-        .await
-        .with_context(|| format!("failed to download {SAFETENSORS_FILENAME} from {HF_REPO}"))?;
+    let [config, weights] =
+        download_huggingface_files(runtime, HF_REPO, [CONFIG_FILENAME, SAFETENSORS_FILENAME])
+            .await
+            .with_context(|| format!("failed to download model files from {HF_REPO}"))?;
     Ok((config, weights))
 }
 

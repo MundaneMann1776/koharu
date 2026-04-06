@@ -229,6 +229,8 @@ async fn get_meta(State(state): State<ApiState>) -> ApiResult<Json<MetaInfo>> {
     Ok(Json(MetaInfo {
         version: resources.version.to_string(),
         ml_device: device.ml_device,
+        backend: device.backend,
+        accelerated_engines: device.accelerated_engines,
     }))
 }
 

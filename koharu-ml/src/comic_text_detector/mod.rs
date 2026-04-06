@@ -3,7 +3,7 @@ mod postprocess;
 mod unet;
 mod yolo_v5;
 
-use std::cmp;
+use std::{cmp, path::PathBuf};
 
 use anyhow::{Context, bail};
 use candle_core::{DType, Device, IndexOp, Tensor};
@@ -13,7 +13,7 @@ use koharu_core::TextBlock;
 use koharu_runtime::RuntimeManager;
 use tracing::instrument;
 
-use crate::{device, loading};
+use crate::{download_huggingface_files, load_runtime_model, loading};
 
 pub use postprocess::{
     ComicTextDetection, Quad, crop_text_block_bbox, extract_text_block_regions,
@@ -60,6 +60,32 @@ pub struct ComicTextDetector {
     device: Device,
 }
 
+struct ModelFiles {
+    yolo: PathBuf,
+    unet: PathBuf,
+    dbnet: Option<PathBuf>,
+}
+
+impl ModelFiles {
+    async fn download(runtime: &RuntimeManager, load_dbnet: bool) -> anyhow::Result<Self> {
+        let files = download_huggingface_files(
+            runtime,
+            HF_REPO,
+            ["yolo-v5.safetensors", "unet.safetensors"],
+        )
+        .await?;
+        let [yolo, unet] = files;
+        let dbnet = if load_dbnet {
+            let [dbnet] =
+                download_huggingface_files(runtime, HF_REPO, ["dbnet.safetensors"]).await?;
+            Some(dbnet)
+        } else {
+            None
+        };
+        Ok(Self { yolo, unet, dbnet })
+    }
+}
+
 impl ComicTextDetector {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> anyhow::Result<Self> {
         Self::load_inner(runtime, cpu, true).await
@@ -77,30 +103,25 @@ impl ComicTextDetector {
         cpu: bool,
         load_dbnet: bool,
     ) -> anyhow::Result<Self> {
-        let device = device(cpu)?;
-        let downloads = runtime.downloads();
-        let yolo_path = downloads
-            .huggingface_model(HF_REPO, "yolo-v5.safetensors")
-            .await?;
-        let yolo = loading::load_mmaped_safetensors_path(&yolo_path, &device, |vb| {
+        load_runtime_model(
+            runtime,
+            cpu,
+            ModelFiles::download(runtime, load_dbnet),
+            Self::load_from_files,
+        )
+        .await
+    }
+
+    fn load_from_files(files: ModelFiles, device: Device) -> anyhow::Result<Self> {
+        let yolo = loading::load_mmaped_safetensors_path(&files.yolo, &device, |vb| {
             yolo_v5::YoloV5::load(vb, 2, 3)
         })?;
-        let unet_path = downloads
-            .huggingface_model(HF_REPO, "unet.safetensors")
-            .await?;
-        let unet = loading::load_mmaped_safetensors_path(&unet_path, &device, unet::UNet::load)?;
-        let dbnet = if load_dbnet {
-            let dbnet_path = downloads
-                .huggingface_model(HF_REPO, "dbnet.safetensors")
-                .await?;
-            Some(loading::load_mmaped_safetensors_path(
-                &dbnet_path,
-                &device,
-                dbnet::DbNet::load,
-            )?)
-        } else {
-            None
-        };
+        let unet = loading::load_mmaped_safetensors_path(&files.unet, &device, unet::UNet::load)?;
+        let dbnet = files
+            .dbnet
+            .as_ref()
+            .map(|dbnet| loading::load_mmaped_safetensors_path(dbnet, &device, dbnet::DbNet::load))
+            .transpose()?;
 
         Ok(Self {
             yolo,
@@ -393,26 +414,11 @@ fn morph_close(mask: &Tensor, radius: usize) -> anyhow::Result<Tensor> {
 }
 
 pub async fn prefetch(runtime: &RuntimeManager) -> anyhow::Result<()> {
-    let downloads = runtime.downloads();
-    downloads
-        .huggingface_model(HF_REPO, "yolo-v5.safetensors")
-        .await?;
-    downloads
-        .huggingface_model(HF_REPO, "unet.safetensors")
-        .await?;
-    downloads
-        .huggingface_model(HF_REPO, "dbnet.safetensors")
-        .await?;
+    let _ = ModelFiles::download(runtime, true).await?;
     Ok(())
 }
 
 pub async fn prefetch_segmentation(runtime: &RuntimeManager) -> anyhow::Result<()> {
-    let downloads = runtime.downloads();
-    downloads
-        .huggingface_model(HF_REPO, "yolo-v5.safetensors")
-        .await?;
-    downloads
-        .huggingface_model(HF_REPO, "unet.safetensors")
-        .await?;
+    let _ = ModelFiles::download(runtime, false).await?;
     Ok(())
 }

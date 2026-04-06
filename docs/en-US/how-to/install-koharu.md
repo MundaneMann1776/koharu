@@ -43,6 +43,7 @@ If you want to prefetch those runtime dependencies ahead of time, run Koharu onc
 Koharu supports:
 
 - CUDA on supported NVIDIA GPUs
+- ZLUDA on Windows AMD GPUs for selected detector and AOT inpainting Candle models
 - Metal on Apple Silicon Macs
 - Vulkan on Windows and Linux for OCR and LLM inference
 - CPU fallback on all platforms
@@ -50,14 +51,17 @@ Koharu supports:
 Some practical details matter:
 
 - detection and inpainting benefit most from CUDA or Metal
+- on Windows AMD, ZLUDA acceleration currently covers `comic-text-bubble-detector`, `comic-text-detector`, `comic-text-detector-seg`, and `aot-inpainting`
+- Windows AMD still requires the HIP SDK installed locally; Koharu manages the ZLUDA files but not the HIP SDK
 - Vulkan is mainly the fallback GPU path for OCR and local LLM inference
-- if Koharu cannot verify that your NVIDIA driver supports CUDA 13.1, it falls back to CPU
+- if Koharu cannot verify that your NVIDIA driver supports CUDA 13.0, it falls back to CPU
+- if Koharu cannot validate the Windows AMD ZLUDA + HIP setup, unsupported Candle models fall back to CPU while llama.cpp remains on Vulkan
 
 On CUDA-capable systems, Koharu bundles and initializes the runtime pieces it needs instead of requiring you to configure every library path manually.
 
 !!! note
 
-    Keep your NVIDIA driver up to date. Koharu checks for CUDA 13.1 support and falls back to CPU if the driver is too old.
+    Keep your NVIDIA driver up to date. Koharu checks for CUDA 13.0 support and falls back to CPU if the driver is too old.
 
 ## After installation
 

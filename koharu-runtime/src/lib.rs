@@ -6,6 +6,8 @@ mod llama;
 mod loader;
 pub mod packages;
 mod runtime;
+#[cfg_attr(not(target_os = "windows"), path = "zluda_stub.rs")]
+mod zluda;
 
 pub use cuda::{
     CudaDriverVersion, check_cuda_driver_support, compute_capability,
@@ -16,5 +18,5 @@ pub use inventory;
 pub use loader::{load_library_by_name, load_library_by_path};
 pub use packages::{PackageCatalog as Catalog, PackageFuture, PackageKind, PackageRegistration};
 pub use runtime::{
-    ComputePolicy, Runtime, RuntimeHttpConfig, RuntimeManager, default_app_data_root,
+    ComputePolicy, GpuBackend, Runtime, RuntimeHttpConfig, RuntimeManager, default_app_data_root,
 };

@@ -52,7 +52,7 @@ pub struct PPDocLayoutV3 {
 
 impl PPDocLayoutV3 {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
-        let device = device(cpu)?;
+        let device = device(runtime, cpu)?;
         let downloads = runtime.downloads();
         let config_path = downloads.huggingface_model(HF_REPO, "config.json").await?;
         let preprocessor_path = downloads

@@ -62,6 +62,7 @@ import type {
   ProviderConfig,
   LlmProviderCatalog,
   GetEngineCatalog200,
+  MetaInfo,
 } from '@/lib/api/schemas'
 
 const GITHUB_REPO = 'mayocream/koharu'
@@ -71,6 +72,7 @@ type VersionStatus = 'loading' | 'latest' | 'outdated' | 'error'
 const TABS = [
   { id: 'appearance', icon: PaletteIcon, labelKey: 'settings.appearance' },
   { id: 'engines', icon: CpuIcon, labelKey: 'settings.engines' },
+  { id: 'device', icon: CpuIcon, labelKey: 'settings.device' },
   { id: 'providers', icon: KeyIcon, labelKey: 'settings.apiKeys' },
   { id: 'runtime', icon: HardDriveIcon, labelKey: 'settings.runtime' },
   { id: 'about', icon: InfoIcon, labelKey: 'settings.about' },
@@ -87,6 +89,41 @@ type SettingsDialogProps = {
 const DEFAULT_HTTP_CONNECT_TIMEOUT = 20
 const DEFAULT_HTTP_READ_TIMEOUT = 300
 const DEFAULT_HTTP_MAX_RETRIES = 3
+
+function formatBackendName(backend: string) {
+  switch (backend) {
+    case 'cpu':
+      return 'CPU'
+    case 'metal':
+      return 'Metal'
+    case 'cuda-nvidia':
+      return 'CUDA (NVIDIA)'
+    case 'cuda-zluda':
+      return 'CUDA (ZLUDA)'
+    default:
+      return backend
+  }
+}
+
+function getEngineNameLookup(catalog: GetEngineCatalog200) {
+  const names = new Map<string, string>()
+  const groups = [
+    catalog.detectors,
+    catalog.bubbleDetectors,
+    catalog.fontDetectors,
+    catalog.segmenters,
+    catalog.ocr,
+    catalog.translators,
+    catalog.inpainters,
+    catalog.renderers,
+  ]
+  for (const group of groups) {
+    for (const engine of group) {
+      names.set(engine.id, engine.name)
+    }
+  }
+  return names
+}
 
 export function SettingsDialog({
   open,
@@ -115,7 +152,7 @@ export function SettingsDialog({
   const [isSavingStorageSettings, setIsSavingStorageSettings] = useState(false)
   const [engineCatalog, setEngineCatalog] =
     useState<GetEngineCatalog200 | null>(null)
-  const [appVersion, setAppVersion] = useState<string>()
+  const [metaInfo, setMetaInfo] = useState<MetaInfo | null>(null)
   const [latestVersion, setLatestVersion] = useState<string>()
   const [versionStatus, setVersionStatus] = useState<VersionStatus>('loading')
 
@@ -140,7 +177,7 @@ export function SettingsDialog({
     void (async () => {
       try {
         const meta = await getMeta()
-        setAppVersion(meta.version)
+        setMetaInfo(meta)
         const res = await fetch(
           `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
         )
@@ -299,6 +336,9 @@ export function SettingsDialog({
                   }}
                 />
               )}
+              {tab === 'device' && (
+                <DevicePane catalog={engineCatalog} meta={metaInfo} />
+              )}
               {tab === 'providers' && (
                 <ProvidersPane
                   catalogs={providerCatalogs}
@@ -379,7 +419,7 @@ export function SettingsDialog({
               )}
               {tab === 'about' && (
                 <AboutPane
-                  version={appVersion}
+                  version={metaInfo?.version}
                   latestVersion={latestVersion}
                   status={versionStatus}
                 />
@@ -521,6 +561,69 @@ function EnginesPane({
         </div>
       ))}
     </div>
+  )
+}
+
+function DevicePane({
+  catalog,
+  meta,
+}: {
+  catalog: GetEngineCatalog200 | null
+  meta: MetaInfo | null
+}) {
+  const { t } = useTranslation()
+  const engineNameLookup = useMemo(
+    () => (catalog ? getEngineNameLookup(catalog) : null),
+    [catalog],
+  )
+  const acceleratedEngines =
+    meta?.acceleratedEngines.map(
+      (engineId) => engineNameLookup?.get(engineId) ?? engineId,
+    ) ?? []
+
+  return (
+    <Section
+      title={t('settings.device')}
+      description={t('settings.deviceDescription')}
+    >
+      <div className='bg-muted/30 border-border space-y-3 rounded-xl border p-4'>
+        <div className='space-y-2.5 text-sm'>
+          <div className='flex items-start justify-between gap-4'>
+            <span className='text-muted-foreground'>
+              {t('settings.deviceMl')}
+            </span>
+            <span className='font-mono text-xs font-medium'>
+              {meta?.mlDevice ?? '...'}
+            </span>
+          </div>
+          <div className='flex items-start justify-between gap-4'>
+            <span className='text-muted-foreground'>{t('settings.runtime')}</span>
+            <span className='font-mono text-xs font-medium'>
+              {meta ? formatBackendName(meta.backend) : '...'}
+            </span>
+          </div>
+          <div className='flex items-start justify-between gap-4'>
+            <span className='text-muted-foreground'>{t('settings.engines')}</span>
+            <div className='flex max-w-[28rem] flex-wrap justify-end gap-1.5'>
+              {acceleratedEngines.length ? (
+                acceleratedEngines.map((engine) => (
+                  <span
+                    key={engine}
+                    className='bg-background border-border rounded-md border px-2 py-1 text-[11px] font-medium'
+                  >
+                    {engine}
+                  </span>
+                ))
+              ) : (
+                <span className='text-muted-foreground text-xs'>
+                  {meta ? 'N/A' : '...'}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Section>
   )
 }
 

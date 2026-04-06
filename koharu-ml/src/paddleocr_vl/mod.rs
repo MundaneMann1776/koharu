@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer;
 use tracing::instrument;
 
-use crate::{device, loading};
+use crate::{download_huggingface_files, load_runtime_model, load_with_device, loading};
 
 mod config;
 mod model;
@@ -167,6 +167,42 @@ struct ModelFiles {
     weights: PathBuf,
 }
 
+impl ModelFiles {
+    async fn download(runtime: &RuntimeManager) -> Result<Self> {
+        let [config, preprocessor, tokenizer, weights] = download_huggingface_files(
+            runtime,
+            HF_REPO,
+            [
+                "config.json",
+                "preprocessor_config.json",
+                "tokenizer.json",
+                "model.safetensors",
+            ],
+        )
+        .await?;
+        Ok(Self {
+            config,
+            preprocessor,
+            tokenizer,
+            weights,
+        })
+    }
+
+    fn from_dir(dir: &Path) -> Self {
+        let weights = if dir.join("model.safetensors").exists() {
+            dir.join("model.safetensors")
+        } else {
+            dir.join("pytorch_model.bin")
+        };
+        Self {
+            config: dir.join("config.json"),
+            preprocessor: dir.join("preprocessor_config.json"),
+            tokenizer: dir.join("tokenizer.json"),
+            weights,
+        }
+    }
+}
+
 struct PreparedImage {
     pixel_values: Tensor,
     grid_thw: Tensor,
@@ -196,42 +232,32 @@ pub struct PaddleOcrVl {
 
 impl PaddleOcrVl {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
-        let downloads = runtime.downloads();
-        let files = ModelFiles {
-            config: downloads.huggingface_model(HF_REPO, "config.json").await?,
-            preprocessor: downloads
-                .huggingface_model(HF_REPO, "preprocessor_config.json")
-                .await?,
-            tokenizer: downloads
-                .huggingface_model(HF_REPO, "tokenizer.json")
-                .await?,
-            weights: downloads
-                .huggingface_model(HF_REPO, "model.safetensors")
-                .await?,
-        };
-        Self::load_from_files(files, cpu)
+        load_runtime_model(
+            runtime,
+            cpu,
+            ModelFiles::download(runtime),
+            Self::load_from_files,
+        )
+        .await
     }
 
     pub fn load_from_dir(dir: impl AsRef<Path>, cpu: bool) -> Result<Self> {
-        let dir = dir.as_ref();
-        let weights = if dir.join("model.safetensors").exists() {
-            dir.join("model.safetensors")
-        } else {
-            dir.join("pytorch_model.bin")
-        };
-        Self::load_from_files(
-            ModelFiles {
-                config: dir.join("config.json"),
-                preprocessor: dir.join("preprocessor_config.json"),
-                tokenizer: dir.join("tokenizer.json"),
-                weights,
-            },
-            cpu,
-        )
+        let files = ModelFiles::from_dir(dir.as_ref());
+        load_with_device(None, cpu, |device| Self::load_from_files(files, device))
     }
 
-    fn load_from_files(files: ModelFiles, cpu: bool) -> Result<Self> {
-        let device = device(cpu)?;
+    pub fn load_from_dir_with_runtime(
+        runtime: &RuntimeManager,
+        dir: impl AsRef<Path>,
+        cpu: bool,
+    ) -> Result<Self> {
+        let files = ModelFiles::from_dir(dir.as_ref());
+        load_with_device(Some(runtime), cpu, |device| {
+            Self::load_from_files(files, device)
+        })
+    }
+
+    fn load_from_files(files: ModelFiles, device: Device) -> Result<Self> {
         let dtype = if device.is_cuda() {
             DType::BF16
         } else {

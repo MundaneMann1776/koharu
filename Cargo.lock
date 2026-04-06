@@ -642,7 +642,7 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.9.2"
-source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#1c0496890a9418ab89348c64c4541c1a38fec422"
+source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#59ad4a319623beea6c3a02f218d49106a1d32428"
 dependencies = [
  "byteorder",
  "candle-kernels",
@@ -671,7 +671,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.9.2"
-source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#1c0496890a9418ab89348c64c4541c1a38fec422"
+source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#59ad4a319623beea6c3a02f218d49106a1d32428"
 dependencies = [
  "bindgen_cuda",
 ]
@@ -679,7 +679,7 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.9.2"
-source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#1c0496890a9418ab89348c64c4541c1a38fec422"
+source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#59ad4a319623beea6c3a02f218d49106a1d32428"
 dependencies = [
  "half",
  "objc2",
@@ -693,7 +693,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.9.2"
-source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#1c0496890a9418ab89348c64c4541c1a38fec422"
+source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#59ad4a319623beea6c3a02f218d49106a1d32428"
 dependencies = [
  "candle-core",
  "candle-metal-kernels",
@@ -710,7 +710,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.9.2"
-source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#1c0496890a9418ab89348c64c4541c1a38fec422"
+source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#59ad4a319623beea6c3a02f218d49106a1d32428"
 dependencies = [
  "byteorder",
  "candle-core",
@@ -728,7 +728,7 @@ dependencies = [
 [[package]]
 name = "candle-ug"
 version = "0.9.2"
-source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#1c0496890a9418ab89348c64c4541c1a38fec422"
+source = "git+https://github.com/mayocream/candle?branch=cuda-dynamic-loading#59ad4a319623beea6c3a02f218d49106a1d32428"
 dependencies = [
  "ug",
  "ug-cuda",
@@ -4163,6 +4163,7 @@ dependencies = [
  "reqwest-retry",
  "serde",
  "serde_json",
+ "strum",
  "tar",
  "tempfile",
  "tokio",

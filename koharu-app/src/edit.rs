@@ -468,11 +468,7 @@ pub async fn inpaint_partial(
     let lama = state
         .registry
         .model("lama", || async {
-            koharu_ml::lama::Lama::load(
-                &state.runtime,
-                matches!(state.device, koharu_ml::Device::Cpu),
-            )
-            .await
+            koharu_ml::lama::Lama::load(&state.runtime, state.candle_uses_cpu("lama-manga")).await
         })
         .await?;
     let result = lama.inference_with_blocks(&image_crop, &mask_crop, Some(&localized_blocks))?;

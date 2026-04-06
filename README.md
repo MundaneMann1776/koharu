@@ -102,7 +102,7 @@ Koharu supports CUDA, Metal, and Vulkan. CPU fallback is always available when t
 
 On Windows, Koharu ships with CUDA support so it can use NVIDIA GPUs for the full local pipeline.
 
-Koharu bundles CUDA Toolkit 13.1. The required DLLs are extracted to the application data directory on first run.
+Koharu bundles CUDA Toolkit 13.0. The required DLLs are extracted to the application data directory on first run.
 
 > [!NOTE]
 > Make sure you have current NVIDIA drivers installed. You can update them through [NVIDIA App](https://www.nvidia.com/en-us/software/nvidia-app/).

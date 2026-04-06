@@ -11,7 +11,10 @@ use candle_nn::ops::sigmoid;
 use image::{DynamicImage, imageops::FilterType};
 use koharu_runtime::RuntimeManager;
 
-use crate::{device, loading, probability_map::ProbabilityMap};
+use crate::{
+    download_huggingface_files, load_runtime_model, load_with_device, loading,
+    probability_map::ProbabilityMap,
+};
 
 const REPO: &str = "mayocream/manga-text-segmentation-2025";
 const SAFETENSORS_FILENAME: &str = "model.safetensors";
@@ -38,12 +41,20 @@ struct PreparedInput {
 
 impl MangaTextSegmentation {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
-        let safetensors = resolve_safetensors_path(runtime).await?;
-        Self::load_from_path(&safetensors, cpu)
+        load_runtime_model(
+            runtime,
+            cpu,
+            resolve_safetensors_path(runtime),
+            |path, device| Self::load_from_path_impl(&path, device),
+        )
+        .await
     }
 
     pub fn load_from_path(path: impl AsRef<Path>, cpu: bool) -> Result<Self> {
-        let device = device(cpu)?;
+        load_with_device(None, cpu, |device| Self::load_from_path_impl(path, device))
+    }
+
+    fn load_from_path_impl(path: impl AsRef<Path>, device: Device) -> Result<Self> {
         let model = loading::load_mmaped_safetensors_path(
             path.as_ref(),
             &device,
@@ -162,11 +173,10 @@ pub async fn prefetch(runtime: &RuntimeManager) -> Result<()> {
 }
 
 async fn resolve_safetensors_path(runtime: &RuntimeManager) -> Result<PathBuf> {
-    runtime
-        .downloads()
-        .huggingface_model(REPO, SAFETENSORS_FILENAME)
+    let [path] = download_huggingface_files(runtime, REPO, [SAFETENSORS_FILENAME])
         .await
-        .with_context(|| format!("failed to download {SAFETENSORS_FILENAME} from {REPO}"))
+        .with_context(|| format!("failed to download {SAFETENSORS_FILENAME} from {REPO}"))?;
+    Ok(path)
 }
 
 fn scaled_dimensions(width: u32, height: u32, max_pixels: u64) -> (u32, u32) {

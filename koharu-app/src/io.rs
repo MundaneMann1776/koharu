@@ -14,11 +14,9 @@ pub async fn app_version(state: AppResources) -> anyhow::Result<String> {
 
 pub async fn device(state: AppResources) -> anyhow::Result<DeviceInfo> {
     Ok(DeviceInfo {
-        ml_device: match state.device {
-            koharu_ml::Device::Cpu => "CPU".to_string(),
-            koharu_ml::Device::Cuda(_) => "CUDA".to_string(),
-            koharu_ml::Device::Metal(_) => "Metal".to_string(),
-        },
+        ml_device: state.gpu_backend.display_name().to_string(),
+        backend: state.gpu_backend.as_str().to_string(),
+        accelerated_engines: state.model_acceleration.accelerated_engines(),
     })
 }
 

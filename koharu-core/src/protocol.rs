@@ -22,6 +22,8 @@ pub struct FontFaceInfo {
 pub struct MetaInfo {
     pub version: String,
     pub ml_device: String,
+    pub backend: String,
+    pub accelerated_engines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, ToSchema)]

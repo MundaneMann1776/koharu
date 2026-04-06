@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct DeviceInfo {
     pub ml_device: String,
+    pub backend: String,
+    pub accelerated_engines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -202,6 +204,8 @@ mod tests {
     fn command_dtos_round_trip() {
         round_trip(&DeviceInfo {
             ml_device: "CPU".to_string(),
+            backend: "cpu".to_string(),
+            accelerated_engines: vec![],
         });
         round_trip(&OpenExternalPayload {
             url: "https://example.com".to_string(),

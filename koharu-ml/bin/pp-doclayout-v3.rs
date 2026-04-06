@@ -7,7 +7,6 @@ use imageproc::{
     rect::Rect,
 };
 use koharu_ml::pp_doclayout_v3::PPDocLayoutV3;
-use koharu_runtime::{ComputePolicy, RuntimeManager, default_app_data_root};
 use tokio::runtime::Builder;
 
 #[path = "common.rs"]
@@ -174,15 +173,9 @@ fn main() -> Result<()> {
 
 async fn async_main() -> Result<()> {
     let cli = Cli::parse();
-    let runtime = RuntimeManager::new(
-        default_app_data_root(),
-        if cli.cpu {
-            ComputePolicy::CpuOnly
-        } else {
-            ComputePolicy::PreferGpu
-        },
-    )?;
-    let model = PPDocLayoutV3::load(&runtime, cli.cpu).await?;
+    let runtime = common::prepare_runtime(cli.cpu).await?;
+    let cpu = common::effective_cpu(&runtime, cli.cpu, "pp-doclayout-v3")?;
+    let model = PPDocLayoutV3::load(&runtime, cpu).await?;
     let bytes = std::fs::read(&cli.input)?;
     let format = image::guess_format(&bytes)?;
     let image = image::load_from_memory_with_format(&bytes, format)?;

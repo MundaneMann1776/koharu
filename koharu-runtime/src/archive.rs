@@ -17,6 +17,7 @@ pub(crate) enum ArchiveKind {
 pub(crate) enum ExtractPolicy<'a> {
     RuntimeLibraries,
     Selected(&'a [&'a str]),
+    SelectedPaths(&'a [&'a str]),
 }
 
 pub(crate) fn detect_kind(file_name: &str) -> Result<ArchiveKind> {
@@ -56,7 +57,7 @@ fn extract_zip(archive_path: &Path, output_dir: &Path, policy: ExtractPolicy<'_>
         let Some(file_name) = entry_basename(entry.name()) else {
             continue;
         };
-        if !should_extract(&file_name, policy) {
+        if !should_extract(entry.name(), &file_name, policy) {
             continue;
         }
 
@@ -81,17 +82,16 @@ fn extract_tar_gz(archive_path: &Path, output_dir: &Path, policy: ExtractPolicy<
         .with_context(|| format!("failed to read tar `{}`", archive_path.display()))?
     {
         let mut entry = entry.context("failed to read tar entry")?;
-        let Some(file_name) = entry_basename(
-            entry
-                .path()
-                .context("failed to read tar entry path")?
-                .as_os_str()
-                .to_string_lossy()
-                .as_ref(),
-        ) else {
+        let entry_path = entry
+            .path()
+            .context("failed to read tar entry path")?
+            .as_os_str()
+            .to_string_lossy()
+            .into_owned();
+        let Some(file_name) = entry_basename(&entry_path) else {
             continue;
         };
-        if !should_extract(&file_name, policy) {
+        if !should_extract(&entry_path, &file_name, policy) {
             continue;
         }
 
@@ -123,13 +123,23 @@ fn extract_tar_gz(archive_path: &Path, output_dir: &Path, policy: ExtractPolicy<
     materialize_aliases(&aliases)
 }
 
-fn should_extract(file_name: &str, policy: ExtractPolicy<'_>) -> bool {
+fn should_extract(entry_name: &str, file_name: &str, policy: ExtractPolicy<'_>) -> bool {
     match policy {
         ExtractPolicy::RuntimeLibraries => looks_like_runtime_library(file_name),
         ExtractPolicy::Selected(wanted) => wanted
             .iter()
             .any(|candidate| file_name.eq_ignore_ascii_case(candidate)),
+        ExtractPolicy::SelectedPaths(wanted) => {
+            let entry_name = normalize_archive_path(entry_name);
+            wanted.iter().any(|candidate| {
+                entry_name.eq_ignore_ascii_case(&normalize_archive_path(candidate))
+            })
+        }
     }
+}
+
+fn normalize_archive_path(path: &str) -> String {
+    path.trim_start_matches("./").replace('\\', "/")
 }
 
 fn entry_basename(entry_name: &str) -> Option<String> {
@@ -248,6 +258,37 @@ mod tests {
             b"cuda"
         );
         assert!(!output_dir.join("ignored.txt").exists());
+    }
+
+    #[test]
+    fn extract_selected_paths_matches_exact_archive_paths() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let archive_path = tempdir.path().join("test.zip");
+        let output_dir = tempdir.path().join("out");
+        fs::create_dir_all(&output_dir).unwrap();
+
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("zluda/cublas64_13.dll", options).unwrap();
+        zip.write_all(b"real").unwrap();
+        zip.start_file("zluda/trace/cublas64_13.dll", options)
+            .unwrap();
+        zip.write_all(b"trace").unwrap();
+        zip.finish().unwrap();
+
+        extract(
+            &archive_path,
+            &output_dir,
+            ArchiveKind::Zip,
+            ExtractPolicy::SelectedPaths(&["zluda/cublas64_13.dll"]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(output_dir.join("cublas64_13.dll")).unwrap(),
+            b"real"
+        );
     }
 
     #[test]

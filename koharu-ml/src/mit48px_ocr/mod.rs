@@ -13,7 +13,10 @@ use tracing::instrument;
 
 use model::{Mit48pxModel, RawPrediction};
 
-use crate::{comic_text_detector::extract_text_block_regions, device, loading};
+use crate::{
+    comic_text_detector::extract_text_block_regions, download_huggingface_files,
+    load_runtime_model, load_with_device, loading,
+};
 
 const OCR_CHUNK_SIZE: usize = 16;
 const HF_REPO: &str = "mayocream/mit48px-ocr";
@@ -71,6 +74,30 @@ struct ModelFiles {
     weights: PathBuf,
 }
 
+impl ModelFiles {
+    async fn download(runtime: &RuntimeManager) -> Result<Self> {
+        let [config, dictionary, weights] = download_huggingface_files(
+            runtime,
+            HF_REPO,
+            ["config.json", "alphabet-all-v7.txt", "model.safetensors"],
+        )
+        .await?;
+        Ok(Self {
+            config,
+            dictionary,
+            weights,
+        })
+    }
+
+    fn from_dir(dir: &Path) -> Self {
+        Self {
+            config: dir.join("config.json"),
+            dictionary: dir.join("alphabet-all-v7.txt"),
+            weights: dir.join("model.safetensors"),
+        }
+    }
+}
+
 pub struct Mit48pxOcr {
     model: Mit48pxModel,
     config: Mit48pxConfig,
@@ -80,29 +107,32 @@ pub struct Mit48pxOcr {
 
 impl Mit48pxOcr {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
-        let hf = runtime.downloads();
-        let files = ModelFiles {
-            config: hf.huggingface_model(HF_REPO, "config.json").await?,
-            dictionary: hf.huggingface_model(HF_REPO, "alphabet-all-v7.txt").await?,
-            weights: hf.huggingface_model(HF_REPO, "model.safetensors").await?,
-        };
-        Self::load_from_files(files, cpu)
+        load_runtime_model(
+            runtime,
+            cpu,
+            ModelFiles::download(runtime),
+            Self::load_from_files,
+        )
+        .await
     }
 
     pub fn load_from_dir(dir: impl AsRef<Path>, cpu: bool) -> Result<Self> {
-        let dir = dir.as_ref();
-        Self::load_from_files(
-            ModelFiles {
-                config: dir.join("config.json"),
-                dictionary: dir.join("alphabet-all-v7.txt"),
-                weights: dir.join("model.safetensors"),
-            },
-            cpu,
-        )
+        let files = ModelFiles::from_dir(dir.as_ref());
+        load_with_device(None, cpu, |device| Self::load_from_files(files, device))
     }
 
-    fn load_from_files(files: ModelFiles, cpu: bool) -> Result<Self> {
-        let device = device(cpu)?;
+    pub fn load_from_dir_with_runtime(
+        runtime: &RuntimeManager,
+        dir: impl AsRef<Path>,
+        cpu: bool,
+    ) -> Result<Self> {
+        let files = ModelFiles::from_dir(dir.as_ref());
+        load_with_device(Some(runtime), cpu, |device| {
+            Self::load_from_files(files, device)
+        })
+    }
+
+    fn load_from_files(files: ModelFiles, device: Device) -> Result<Self> {
         let config: Mit48pxConfig =
             loading::read_json(&files.config).context("failed to parse mit48px config")?;
         let dictionary = read_dictionary(&files.dictionary)?;

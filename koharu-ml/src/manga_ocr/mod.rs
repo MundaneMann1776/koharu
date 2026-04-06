@@ -31,7 +31,7 @@ pub struct MangaOcr {
 
 impl MangaOcr {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
-        let device = device(cpu)?;
+        let device = device(runtime, cpu)?;
         let hf = runtime.downloads();
         let config_path = hf.huggingface_model(HF_REPO, "config.json").await?;
         let preprocessor_path = hf

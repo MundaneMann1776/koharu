@@ -5,6 +5,8 @@
  */
 
 export interface MetaInfo {
+  acceleratedEngines: string[]
+  backend: string
   mlDevice: string
   version: string
 }
