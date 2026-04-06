@@ -106,7 +106,7 @@ async fn ensure_ready_with_profile(runtime: &Runtime, profile: ValidationProfile
         install.commit()?;
     }
 
-    let hip_bin = detect_hip_bin_dir().ok_or_else(|| hip_sdk_missing_error())?;
+    let hip_bin = detect_hip_bin_dir().ok_or_else(hip_sdk_missing_error)?;
     export_hip_path(&hip_bin);
     add_runtime_search_path(&hip_bin)?;
     add_runtime_search_path(&install_dir)?;
@@ -127,14 +127,14 @@ pub(crate) fn candidate_status(runtime: &Runtime) -> Result<()> {
     if !runtime.wants_gpu() {
         bail!("GPU acceleration is disabled by compute policy");
     }
-    detect_hip_bin_dir().ok_or_else(|| hip_sdk_missing_error())?;
+    detect_hip_bin_dir().ok_or_else(hip_sdk_missing_error)?;
     Ok(())
 }
 
 fn backend_status_with_profile(runtime: &Runtime, profile: ValidationProfile) -> Result<()> {
     candidate_status(runtime)?;
 
-    let hip_bin = detect_hip_bin_dir().ok_or_else(|| hip_sdk_missing_error())?;
+    let hip_bin = detect_hip_bin_dir().ok_or_else(hip_sdk_missing_error)?;
     export_hip_path(&hip_bin);
     if !package_present(runtime)? {
         bail!(
