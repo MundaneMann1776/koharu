@@ -9,10 +9,12 @@ import {
   getListDocumentsQueryKey,
 } from '@/lib/api/documents/documents'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { useBrushHistoryStore } from '@/lib/stores/brushHistoryStore'
 import type { ToolMode } from '@/types'
 import type { MappedDocument } from '@/hooks/useTextBlocks'
 import type { PointerToDocumentFn } from '@/hooks/usePointerToDocument'
 import { useCanvasDrawing } from '@/hooks/useCanvasDrawing'
+import { blobToUint8Array } from '@/lib/util'
 
 type RenderBrushOptions = {
   mode: ToolMode
@@ -41,6 +43,19 @@ export function useRenderBrushDrawing({
     enabled,
     targetCanvasRef,
     clearAfterStroke: true,
+    onBeforeStroke: async (canvas) => {
+      // Capture current brush layer state before applying new stroke (for undo)
+      const documentId = useEditorUiStore.getState().currentDocumentId
+      if (!documentId) return
+
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, 'image/png'),
+      )
+      if (!blob) return
+
+      const pngBytes = await blobToUint8Array(blob)
+      useBrushHistoryStore.getState().pushHistory(documentId, pngBytes)
+    },
     onFinalize: async (patch, region) => {
       const documentId = useEditorUiStore.getState().currentDocumentId
       if (!documentId) return

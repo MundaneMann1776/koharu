@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    body::Body,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{
         HeaderValue, StatusCode,
@@ -52,6 +52,7 @@ pub fn api() -> (axum::Router<ApiState>, utoipa::openapi::OpenApi) {
         .routes(routes!(translate_document))
         .routes(routes!(update_mask))
         .routes(routes!(update_brush_layer))
+        .routes(routes!(replace_brush_layer))
         .routes(routes!(inpaint_region))
         .routes(routes!(create_text_block, put_text_blocks))
         .routes(routes!(patch_text_block, delete_text_block))
@@ -811,6 +812,31 @@ async fn update_brush_layer(
 ) -> ApiResult<StatusCode> {
     let resources = state.resources()?;
     edit::update_brush_layer(resources, &document_id, &request.data, request.region).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    put,
+    path = "/documents/{document_id}/brush-layer-replace",
+    operation_id = "replaceBrushLayer",
+    tag = "regions",
+    params(("document_id" = String, Path,)),
+    request_body(content = Vec<u8>, description = "Full PNG bytes of brush layer", content_type = "application/octet-stream"),
+    responses(
+        (status = 204),
+        (status = 400, body = ApiError, description = "Invalid dimensions or data"),
+        (status = 404, body = ApiError),
+        (status = 503, body = ApiError),
+    ),
+)]
+#[tracing::instrument(level = "info", skip_all)]
+async fn replace_brush_layer(
+    State(state): State<ApiState>,
+    Path(document_id): Path<String>,
+    body: Bytes,
+) -> ApiResult<StatusCode> {
+    let resources = state.resources()?;
+    edit::replace_brush_layer(resources, &document_id, &body).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

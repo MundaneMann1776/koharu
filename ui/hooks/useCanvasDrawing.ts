@@ -31,6 +31,8 @@ export type CanvasDrawingConfig = {
     fullPng: Uint8Array,
     patchRegion: InpaintRegion,
   ) => Promise<void>
+  /** Called before stroke starts to capture pre-stroke state for undo. */
+  onBeforeStroke?: (canvas: HTMLCanvasElement) => Promise<void>
   enabled: boolean
   /** Optional second canvas to mirror strokes to. */
   targetCanvasRef?: RefObject<HTMLCanvasElement | null>
@@ -276,6 +278,12 @@ export function useCanvasDrawing(
       const radius = brushSize / 2
 
       if (first) {
+        // Capture pre-stroke state for undo before starting the stroke
+        if (config.onBeforeStroke && config.targetCanvasRef?.current) {
+          void config.onBeforeStroke(config.targetCanvasRef.current).catch(
+            console.error,
+          )
+        }
         drawingRef.current = true
         lastPointRef.current = clamped
         boundsRef.current = initBounds(clamped, radius)

@@ -29,6 +29,7 @@ import { useTextBlocks, useDocumentLayer } from '@/hooks/useTextBlocks'
 import { useMaskDrawing } from '@/hooks/useMaskDrawing'
 import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
 import { useBrushLayerDisplay } from '@/hooks/useBrushLayerDisplay'
+import { useBrushUndoRedo } from '@/hooks/useBrushUndoRedo'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import {
   resolvePinchMemoScaleRatio,
@@ -138,6 +139,11 @@ export function Workspace() {
   const blockDraftBindings = bindBlockDraft()
   const maskBindings = maskDrawing.bind()
   const brushBindings = brushDrawing.bind()
+
+  // Undo/redo for brush operations
+  useBrushUndoRedo({
+    enabled: mode === 'brush' || mode === 'eraser',
+  })
 
   useEffect(() => {
     if (currentDocument && autoFitEnabled) {

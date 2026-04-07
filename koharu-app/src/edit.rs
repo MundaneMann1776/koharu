@@ -418,6 +418,42 @@ pub async fn update_brush_layer(
         .await
 }
 
+#[tracing::instrument(level = "info", skip_all)]
+pub async fn replace_brush_layer(
+    state: AppResources,
+    document_id: &str,
+    full_png: &[u8],
+) -> anyhow::Result<()> {
+    let doc = state.storage.page(document_id).await?;
+
+    let new_image = image::load_from_memory(full_png)?;
+    let (img_width, img_height) = new_image.dimensions();
+
+    // Validate dimensions match document
+    if img_width != doc.width || img_height != doc.height {
+        anyhow::bail!(
+            "Brush layer dimensions mismatch: expected {}x{}, got {}x{}",
+            doc.width,
+            doc.height,
+            img_width,
+            img_height
+        );
+    }
+
+    let brush_rgba = new_image.to_rgba8();
+    let new_ref = state
+        .storage
+        .images
+        .store_webp(&image::DynamicImage::ImageRgba8(brush_rgba))?;
+
+    state
+        .storage
+        .update_page(document_id, |page| {
+            page.brush_layer = Some(new_ref);
+        })
+        .await
+}
+
 #[instrument(level = "info", skip_all)]
 pub async fn inpaint_partial(
     state: AppResources,
