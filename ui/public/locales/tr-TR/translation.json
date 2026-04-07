@@ -335,6 +335,7 @@
     "ocr": "OCR",
     "translator": "Çevirici",
     "inpainter": "İnpaint Motoru",
-    "renderer": "Render Motoru"
+    "renderer": "Render Motoru",
+    "notAvailable": "N/A"
   }
 }

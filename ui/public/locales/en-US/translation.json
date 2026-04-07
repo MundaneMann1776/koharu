@@ -337,6 +337,7 @@
     "ocr": "OCR",
     "translator": "Translator",
     "inpainter": "Inpainter",
-    "renderer": "Renderer"
+    "renderer": "Renderer",
+    "notAvailable": "N/A"
   }
 }

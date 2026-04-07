@@ -335,6 +335,7 @@
     "ocr": "OCR",
     "translator": "翻譯器",
     "inpainter": "修補器",
-    "renderer": "渲染器"
+    "renderer": "渲染器",
+    "notAvailable": "不可用"
   }
 }

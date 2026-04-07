@@ -335,6 +335,7 @@
     "ocr": "OCR",
     "translator": "Traductor",
     "inpainter": "Inpainter",
-    "renderer": "Renderizador"
+    "renderer": "Renderizador",
+    "notAvailable": "N/D"
   }
 }

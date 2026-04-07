@@ -335,6 +335,7 @@
     "ocr": "OCR",
     "translator": "Переводчик",
     "inpainter": "Инпейнтер",
-    "renderer": "Рендерер"
+    "renderer": "Рендерер",
+    "notAvailable": "Н/Д"
   }
 }

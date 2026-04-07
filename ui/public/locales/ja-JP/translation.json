@@ -335,6 +335,7 @@
     "ocr": "OCR",
     "translator": "翻訳器",
     "inpainter": "インペインター",
-    "renderer": "レンダラー"
+    "renderer": "レンダラー",
+    "notAvailable": "N/A"
   }
 }

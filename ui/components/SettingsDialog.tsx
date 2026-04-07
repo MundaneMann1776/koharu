@@ -616,7 +616,7 @@ function DevicePane({
                 ))
               ) : (
                 <span className='text-muted-foreground text-xs'>
-                  {meta ? 'N/A' : '...'}
+                  {meta ? t('settings.notAvailable') : '...'}
                 </span>
               )}
             </div>
