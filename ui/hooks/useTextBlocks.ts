@@ -143,7 +143,13 @@ export function useTextBlocks() {
       patch[key] = value
     }
 
-    if (hasGeometryChange(updates)) {
+    const geometryActuallyChanged =
+      (updates.x !== undefined && updates.x !== block.x) ||
+      (updates.y !== undefined && updates.y !== block.y) ||
+      (updates.width !== undefined && updates.width !== block.width) ||
+      (updates.height !== undefined && updates.height !== block.height)
+
+    if (geometryActuallyChanged) {
       const ui = useEditorUiStore.getState()
       ui.setShowRenderedImage(false)
       ui.setShowTextBlocksOverlay(true)
