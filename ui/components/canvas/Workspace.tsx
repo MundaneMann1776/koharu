@@ -247,7 +247,7 @@ export function Workspace() {
         enabled: true,
         pinchOnWheel: false,
         preventDefault: true,
-        scaleBounds: { min: 0.1, max: 1 },
+        scaleBounds: { min: 0.1, max: 2 },
         from: () => [useEditorUiStore.getState().scale / 100, 0],
       },
     },
