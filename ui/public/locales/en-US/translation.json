@@ -338,6 +338,6 @@
     "translator": "Translator",
     "inpainter": "Inpainter",
     "renderer": "Renderer",
-    "notAvailable": "N/A"
+    "notAvailable": "Unavailable"
   }
 }
