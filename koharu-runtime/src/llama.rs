@@ -32,6 +32,9 @@ impl LlamaDistribution {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         return Ok(Self::for_backend(runtime.gpu_backend()));
 
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        let _ = runtime;
+
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         return Ok(Self::LinuxVulkanX64);
 

@@ -17,6 +17,7 @@ pub(crate) enum ArchiveKind {
 pub(crate) enum ExtractPolicy<'a> {
     RuntimeLibraries,
     Selected(&'a [&'a str]),
+    #[cfg(any(test, target_os = "windows"))]
     SelectedPaths(&'a [&'a str]),
 }
 
@@ -123,14 +124,15 @@ fn extract_tar_gz(archive_path: &Path, output_dir: &Path, policy: ExtractPolicy<
     materialize_aliases(&aliases)
 }
 
-fn should_extract(entry_name: &str, file_name: &str, policy: ExtractPolicy<'_>) -> bool {
+fn should_extract(_entry_name: &str, file_name: &str, policy: ExtractPolicy<'_>) -> bool {
     match policy {
         ExtractPolicy::RuntimeLibraries => looks_like_runtime_library(file_name),
         ExtractPolicy::Selected(wanted) => wanted
             .iter()
             .any(|candidate| file_name.eq_ignore_ascii_case(candidate)),
+        #[cfg(any(test, target_os = "windows"))]
         ExtractPolicy::SelectedPaths(wanted) => {
-            let entry_name = normalize_archive_path(entry_name);
+            let entry_name = normalize_archive_path(_entry_name);
             wanted.iter().any(|candidate| {
                 entry_name.eq_ignore_ascii_case(&normalize_archive_path(candidate))
             })
@@ -138,6 +140,7 @@ fn should_extract(entry_name: &str, file_name: &str, policy: ExtractPolicy<'_>) 
     }
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn normalize_archive_path(path: &str) -> String {
     path.trim_start_matches("./").replace('\\', "/")
 }

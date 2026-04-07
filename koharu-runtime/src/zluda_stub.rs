@@ -14,10 +14,6 @@ pub(crate) async fn package_prepare(_: &Runtime) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn ensure_ready(_: &Runtime) -> Result<()> {
-    bail!("ZLUDA is only supported on Windows")
-}
-
 pub(crate) fn backend_status(_: &Runtime) -> Result<()> {
     bail!("ZLUDA is only supported on Windows")
 }

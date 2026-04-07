@@ -2,6 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use libloading::Library;
 use serde::Deserialize;
 use std::fmt;
+use std::sync::OnceLock;
 
 use crate::GpuBackend;
 use crate::Runtime;
@@ -14,6 +15,7 @@ const CUDA_13_0_DRIVER_VERSION: i32 = 13000;
 const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: i32 = 75;
 const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR: i32 = 76;
 const MIN_COMPUTE_CAPABILITY: (i32, i32) = (7, 5); // Turing (RTX 20xx) and above
+static CUDA_DRIVER_SUPPORTED: OnceLock<bool> = OnceLock::new();
 
 type CuInit = unsafe extern "C" fn(flags: u32) -> i32;
 type CuDriverGetVersion = unsafe extern "C" fn(driver_version: *mut i32) -> i32;
@@ -195,7 +197,7 @@ pub fn compute_capability() -> Result<(i32, i32)> {
 /// Returns `true` when GPU compute should be used, `false` when the caller
 /// should fall back to CPU.  Warnings are emitted via `tracing::warn!`.
 pub fn check_cuda_driver_support() -> bool {
-    match backend_info() {
+    *CUDA_DRIVER_SUPPORTED.get_or_init(|| match backend_info() {
         Ok(info) => {
             tracing::info!("NVIDIA driver reports CUDA {} support", info.driver_version);
             tracing::info!(
@@ -211,7 +213,7 @@ pub fn check_cuda_driver_support() -> bool {
             );
             false
         }
-    }
+    })
 }
 
 pub(crate) fn package_enabled(runtime: &Runtime) -> bool {
