@@ -1,8 +1,7 @@
 use anyhow::{Result, bail};
+use koharu_core::zluda_supports_engine;
 use koharu_runtime::{ComputePolicy, GpuBackend, RuntimeManager, default_app_data_root};
 use tracing_subscriber::fmt::format::FmtSpan;
-
-const ZLUDA_CPU_ENGINES: &[&str] = &["lama-manga", "paddleocr-vl-candle"];
 
 pub fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -49,11 +48,6 @@ pub fn effective_cpu(runtime: &RuntimeManager, cpu: bool, engine_id: &str) -> Re
 
     Ok(false)
 }
-
-fn zluda_supports_engine(engine_id: &str) -> bool {
-    !ZLUDA_CPU_ENGINES.contains(&engine_id)
-}
-
 fn force_zluda() -> bool {
     std::env::var("KOHARU_FORCE_ZLUDA")
         .ok()

@@ -1,3 +1,4 @@
+pub mod acceleration;
 pub mod commands;
 pub mod events;
 pub mod google_fonts;
@@ -9,6 +10,7 @@ mod effect;
 mod font;
 mod image;
 
+pub use acceleration::{ZLUDA_GPU_ENGINES, zluda_supports_engine};
 pub use commands::*;
 pub use effect::TextShaderEffect;
 pub use events::*;

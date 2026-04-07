@@ -1,3 +1,4 @@
+use koharu_core::{ZLUDA_GPU_ENGINES, zluda_supports_engine};
 use koharu_runtime::GpuBackend;
 
 const CANDLE_GPU_ENGINES: &[&str] = &[
@@ -12,8 +13,6 @@ const CANDLE_GPU_ENGINES: &[&str] = &[
     "lama-manga",
     "aot-inpainting",
 ];
-
-const ZLUDA_CPU_ENGINES: &[&str] = &["lama-manga"];
 
 #[derive(Debug, Clone)]
 pub struct ModelAccelerationPolicy {
@@ -37,9 +36,7 @@ impl ModelAccelerationPolicy {
         match self.backend {
             GpuBackend::Cpu => false,
             GpuBackend::Metal | GpuBackend::CudaNvidia => CANDLE_GPU_ENGINES.contains(&engine_id),
-            GpuBackend::CudaZluda => {
-                CANDLE_GPU_ENGINES.contains(&engine_id) && !ZLUDA_CPU_ENGINES.contains(&engine_id)
-            }
+            GpuBackend::CudaZluda => zluda_supports_engine(engine_id),
         }
     }
 
@@ -50,11 +47,9 @@ impl ModelAccelerationPolicy {
                 .iter()
                 .map(|engine| (*engine).to_string())
                 .collect(),
-            GpuBackend::CudaZluda => CANDLE_GPU_ENGINES
+            GpuBackend::CudaZluda => ZLUDA_GPU_ENGINES
                 .iter()
-                .copied()
-                .filter(|engine| !ZLUDA_CPU_ENGINES.contains(engine))
-                .map(str::to_string)
+                .map(|engine| (*engine).to_string())
                 .collect(),
         }
     }
@@ -65,17 +60,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zluda_accelerates_all_candle_engines_except_known_blockers() {
+    fn zluda_accelerates_only_allowlisted_engines() {
         let policy = ModelAccelerationPolicy::new(GpuBackend::CudaZluda);
-        assert!(policy.accelerates("pp-doclayout-v3"));
         assert!(policy.accelerates("comic-text-bubble-detector"));
         assert!(policy.accelerates("comic-text-detector"));
         assert!(policy.accelerates("comic-text-detector-seg"));
-        assert!(policy.accelerates("speech-bubble-segmentation"));
-        assert!(policy.accelerates("yuzumarker-font-detection"));
-        assert!(policy.accelerates("manga-ocr"));
-        assert!(policy.accelerates("mit48px-ocr"));
         assert!(policy.accelerates("aot-inpainting"));
+        assert!(policy.force_cpu("pp-doclayout-v3"));
+        assert!(policy.force_cpu("speech-bubble-segmentation"));
+        assert!(policy.force_cpu("yuzumarker-font-detection"));
+        assert!(policy.force_cpu("manga-ocr"));
+        assert!(policy.force_cpu("mit48px-ocr"));
         assert!(policy.force_cpu("lama-manga"));
         assert!(policy.force_cpu("paddle-ocr-vl-1.5"));
     }
