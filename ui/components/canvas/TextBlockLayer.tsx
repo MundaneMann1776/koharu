@@ -50,20 +50,13 @@ export function TextBlockLayer({
         pointerEvents: 'none',
       }}
     >
-      {showSprites &&
-        textBlocks.map((block, index) => (
-          <BlockSprite
-            key={`sprite-${block.id ?? index}`}
-            block={block}
-            scale={scale}
-          />
-        ))}
       {textBlocks.map((block, index) => (
         <TextBlockItem
           key={block.id ?? `fallback-${index}`}
           block={block}
           index={index}
           scale={scale}
+          showSprites={!!showSprites}
           selected={index === selectedIndex}
           interactive={interactive}
           onSelect={onSelect}
@@ -78,6 +71,7 @@ type TextBlockItemProps = {
   block: TextBlock
   index: number
   scale: number
+  showSprites: boolean
   selected: boolean
   interactive: boolean
   onSelect: (index: number) => void
@@ -97,6 +91,7 @@ function TextBlockItem({
   block,
   index,
   scale,
+  showSprites,
   selected,
   interactive,
   onSelect,
@@ -200,11 +195,14 @@ function TextBlockItem({
 
   const w = block.width * scale
   const h = block.height * scale
+  const spriteOffsetX = ((block.renderX ?? block.x) - block.x) * scale
+  const spriteOffsetY = ((block.renderY ?? block.y) - block.y) * scale
 
   return (
     <div
       ref={boxRef}
       {...bind()}
+      data-testid={`workspace-text-block-${index}`}
       style={{
         position: 'absolute',
         top: 0,
@@ -218,6 +216,16 @@ function TextBlockItem({
         cursor: interactive ? 'move' : 'default',
       }}
     >
+      {showSprites && (
+        <BlockSprite
+          block={block}
+          scale={scale}
+          x={spriteOffsetX}
+          y={spriteOffsetY}
+          index={index}
+        />
+      )}
+
       {/* Annotation border */}
       <div
         className={`absolute inset-0 rounded ${
@@ -244,16 +252,27 @@ function TextBlockItem({
   )
 }
 
-function BlockSprite({ block, scale }: { block: TextBlock; scale: number }) {
+function BlockSprite({
+  block,
+  scale,
+  x,
+  y,
+  index,
+}: {
+  block: TextBlock
+  scale: number
+  x: number
+  y: number
+  index: number
+}) {
   const { data: src } = useBlobImage(block.rendered)
   if (!src) return null
-  const x = (block.renderX ?? block.x) * scale
-  const y = (block.renderY ?? block.y) * scale
   return (
     <img
       alt=''
       src={src}
       draggable={false}
+      data-testid={`workspace-text-block-sprite-${index}`}
       className='pointer-events-none absolute select-none'
       style={{
         top: 0,
