@@ -29,6 +29,7 @@ pub mod openai_compatible;
 
 const API_KEY_SERVICE: &str = "koharu";
 pub const OPENAI_COMPATIBLE_ID: &str = "openai-compatible";
+const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 static NO_KEYRING: AtomicBool = AtomicBool::new(false);
 
@@ -246,6 +247,14 @@ const PROVIDERS: &[ProviderDescriptor] = &[
         models: ProviderCatalogModels::Dynamic(discover_openai_compatible_models),
         build: build_openai_compatible_provider,
     },
+    ProviderDescriptor {
+        id: "openrouter",
+        name: "OpenRouter",
+        requires_api_key: true,
+        requires_base_url: false,
+        models: ProviderCatalogModels::Dynamic(discover_openrouter_models),
+        build: build_openrouter_provider,
+    },
 ];
 
 pub fn all_provider_descriptors() -> &'static [ProviderDescriptor] {
@@ -391,6 +400,35 @@ fn discover_openai_compatible_models(config: ProviderConfig) -> ProviderDiscover
             config.http_client,
             &base_url,
             config.api_key.as_deref(),
+        )
+        .await?;
+        Ok(models
+            .into_iter()
+            .map(|id| DiscoveredProviderModel {
+                name: id.clone(),
+                id,
+            })
+            .collect())
+    })
+}
+
+fn build_openrouter_provider(config: ProviderConfig) -> anyhow::Result<Box<dyn AnyProvider>> {
+    Ok(Box::new(openai_compatible::OpenAiCompatibleProvider {
+        http_client: Arc::clone(&config.http_client),
+        base_url: OPENROUTER_BASE_URL.to_string(),
+        api_key: Some(required_api_key(&config, "openrouter")?),
+        temperature: config.temperature,
+        max_tokens: config.max_tokens,
+    }))
+}
+
+fn discover_openrouter_models(config: ProviderConfig) -> ProviderDiscoveryFuture {
+    Box::pin(async move {
+        let api_key = required_api_key(&config, "openrouter")?;
+        let models = openai_compatible::list_models(
+            config.http_client,
+            OPENROUTER_BASE_URL,
+            Some(&api_key),
         )
         .await?;
         Ok(models
