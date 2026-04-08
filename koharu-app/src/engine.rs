@@ -824,6 +824,136 @@ inventory::submit! {
     }
 }
 
+// --- GLM-OCR -----------------------------------------------------------------
+
+struct GlmOcrEngine(std::sync::Mutex<koharu_llm::paddleocr_vl::PaddleOcrVl>);
+
+#[async_trait]
+impl Engine for GlmOcrEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        if doc.text_blocks.is_empty() {
+            return Ok(Patch::none());
+        }
+        let (source, regions) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let regions: Vec<_> = doc
+                .text_blocks
+                .iter()
+                .map(|b| koharu_ml::comic_text_detector::crop_text_block_bbox(&source, b))
+                .collect();
+            (source, regions)
+        };
+        let outputs = {
+            let _s = tracing::info_span!("inference", blocks = regions.len()).entered();
+            let mut ocr = self
+                .0
+                .lock()
+                .map_err(|_| anyhow::anyhow!("GLM-OCR mutex poisoned"))?;
+            ocr.inference_images(
+                &regions,
+                koharu_llm::paddleocr_vl::PaddleOcrVlTask::Ocr,
+                128,
+            )?
+        };
+        let mut blocks = doc.text_blocks.clone();
+        for (block, out) in blocks.iter_mut().zip(outputs) {
+            block.text = Some(out.text);
+        }
+        let _ = source;
+        Ok(Patch::apply(|doc| doc.text_blocks = blocks))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "glm-ocr",
+        name: "GLM-OCR",
+        needs: &[Artifact::TextBlocks],
+        produces: &[Artifact::OcrText],
+        load: |res| Box::pin(async move {
+            let backend = res.llm.backend();
+            let m = koharu_llm::paddleocr_vl::PaddleOcrVl::load_backend(
+                &res.runtime,
+                matches!(res.device, koharu_ml::Device::Cpu),
+                backend,
+                koharu_llm::paddleocr_vl::VisionOcrBackend::GlmOcr,
+            ).await?;
+            Ok(Box::new(GlmOcrEngine(std::sync::Mutex::new(m))) as Box<dyn Engine>)
+        }),
+    }
+}
+
+// --- Qwen3-VL ----------------------------------------------------------------
+
+struct Qwen3VlEngine(std::sync::Mutex<koharu_llm::paddleocr_vl::PaddleOcrVl>);
+
+#[async_trait]
+impl Engine for Qwen3VlEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        if doc.text_blocks.is_empty() {
+            return Ok(Patch::none());
+        }
+        let (source, regions) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let regions: Vec<_> = doc
+                .text_blocks
+                .iter()
+                .map(|b| koharu_ml::comic_text_detector::crop_text_block_bbox(&source, b))
+                .collect();
+            (source, regions)
+        };
+        let outputs = {
+            let _s = tracing::info_span!("inference", blocks = regions.len()).entered();
+            let mut ocr = self
+                .0
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Qwen3-VL mutex poisoned"))?;
+            ocr.inference_images(
+                &regions,
+                koharu_llm::paddleocr_vl::PaddleOcrVlTask::Ocr,
+                256,
+            )?
+        };
+        let mut blocks = doc.text_blocks.clone();
+        for (block, out) in blocks.iter_mut().zip(outputs) {
+            block.text = Some(out.text);
+        }
+        let _ = source;
+        Ok(Patch::apply(|doc| doc.text_blocks = blocks))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "qwen3-vl",
+        name: "Qwen3-VL",
+        needs: &[Artifact::TextBlocks],
+        produces: &[Artifact::OcrText],
+        load: |res| Box::pin(async move {
+            let backend = res.llm.backend();
+            let m = koharu_llm::paddleocr_vl::PaddleOcrVl::load_backend(
+                &res.runtime,
+                matches!(res.device, koharu_ml::Device::Cpu),
+                backend,
+                koharu_llm::paddleocr_vl::VisionOcrBackend::Qwen3Vl,
+            ).await?;
+            Ok(Box::new(Qwen3VlEngine(std::sync::Mutex::new(m))) as Box<dyn Engine>)
+        }),
+    }
+}
+
 // --- Manga OCR ---------------------------------------------------------------
 
 struct MangaOcrEngine(koharu_ml::manga_ocr::MangaOcr);
