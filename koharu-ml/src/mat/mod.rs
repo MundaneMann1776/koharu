@@ -12,16 +12,14 @@ use tracing::instrument;
 use crate::{
     device,
     inpainting::{binarize_mask, extract_alpha, restore_alpha_channel},
-    loading,
 };
 
 use self::model::Mat as MatModel;
 
 const HF_REPO: &str = "Sanster/MAT";
-// The upstream checkpoint is `Places_512_FullData_G.pt` (PyTorch pickle).
-// This constant names a safetensors conversion that does not yet exist upstream;
-// users must convert it manually (see Mat::load error message below).
-const WEIGHTS_FILE: &str = "Places_512_FullData_G.safetensors";
+// The upstream checkpoint `Places_512_FullData_G.pt` is a PyTorch pickle.
+// candle's VarBuilder::from_pth loads it directly.
+const WEIGHTS_FILE: &str = "Places_512_FullData_G.pt";
 
 /// Longest side to which the input image is scaled before MAT inference.
 /// MAT-512 was trained at 512×512.
@@ -41,49 +39,25 @@ pub struct Mat {
 }
 
 impl Mat {
-    pub async fn load(_runtime: &RuntimeManager, _cpu: bool) -> Result<Self> {
-        // Sanster/MAT only ships `Places_512_FullData_G.pt` (PyTorch pickle).
-        // koharu's model loader requires safetensors. Convert first:
-        //   python -c "from safetensors.torch import save_file; import torch; \
-        //   ckpt = torch.load('Places_512_FullData_G.pt', map_location='cpu'); \
-        //   save_file(ckpt, 'Places_512_FullData_G.safetensors')"
-        // then place the output in your Koharu data dir under hf-hub/Sanster/MAT/
-        //
-        // Additionally, the MAT architecture implementation in model.rs is an
-        // approximation; weight key names may not match until tested against the
-        // actual checkpoint. Expect a descriptive load error if they differ.
-        bail!(
-            "MAT inpainting is not yet ready for use.\n\
-             The upstream checkpoint (Sanster/MAT) is a PyTorch .pt file; \
-             koharu requires safetensors.\n\
-             Steps to enable:\n\
-             1. Download Places_512_FullData_G.pt from \
-             https://huggingface.co/Sanster/MAT\n\
-             2. Convert: python -c \"from safetensors.torch import save_file; \
-             import torch; save_file(torch.load('Places_512_FullData_G.pt', \
-             map_location='cpu'), 'Places_512_FullData_G.safetensors')\"\n\
-             3. Place the .safetensors file in your Koharu data dir at \
-             hf-hub/Sanster/MAT/\n\
-             This message will be removed once the weight key layout is confirmed."
-        );
-
-        #[allow(unreachable_code)]
-        {
-        let device = device(_cpu)?;
-        let weights_path = _runtime
+    pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
+        let device = device(cpu)?;
+        let weights_path = runtime
             .downloads()
             .huggingface_model(HF_REPO, WEIGHTS_FILE)
             .await?;
-        let model = loading::load_buffered_safetensors_path(&weights_path, &device, |vb| {
-            MatModel::load(&vb)
-        })
-        .context(
-            "failed to load MAT weights — the checkpoint format may differ from expectations; \
-             see koharu-ml/src/mat/model.rs for the expected key layout",
-        )?;
+
+        // Places_512_FullData_G.pt is a raw PyTorch pickle (state_dict).
+        // Weight keys follow the pattern: mapping.fc{0..7}.* and synthesis.b{res}.*
+        let vb = candle_nn::VarBuilder::from_pth(&weights_path, DType::F32, &device)
+            .context("failed to open Places_512_FullData_G.pt")?;
+
+        let model = MatModel::load(&vb)
+            .context(
+                "failed to load MAT weights — verify weight key layout in \
+                 koharu-ml/src/mat/model.rs matches the checkpoint",
+            )?;
 
         Ok(Self { model, device })
-        } // end #[allow(unreachable_code)]
     }
 
     #[instrument(level = "debug", skip_all)]

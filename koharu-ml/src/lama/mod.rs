@@ -1,7 +1,7 @@
 mod fft;
 mod model;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use candle_core::{DType, Device, Tensor};
 use image::{
     DynamicImage, GenericImageView, GrayImage, Luma, Rgb, RgbImage,
@@ -34,8 +34,10 @@ koharu_runtime::declare_hf_model_package!(
 );
 
 // --- big-lama ---------------------------------------------------------------
+// The upstream checkpoint is a PyTorch pickle (.pt) saved by the LaMa
+// training code. candle's VarBuilder::from_pth can load this directly.
 const BIG_LAMA_REPO: &str = "smartywu/big-lama";
-const BIG_LAMA_FILE: &str = "big-lama.safetensors";
+const BIG_LAMA_FILE: &str = "big-lama.pt";
 
 koharu_runtime::declare_hf_model_package!(
     id: "model:big-lama:weights",
@@ -99,31 +101,53 @@ impl Lama {
         cpu: bool,
         variant: LamaVariant,
     ) -> Result<Self> {
-        // big-LaMa upstream (`smartywu/big-lama`) only ships a PyTorch `.pt`
-        // checkpoint, not safetensors. The downloader would get a 404 for
-        // `big-lama.safetensors`. Until koharu adds PyTorch pickle loading or
-        // a safetensors mirror is published, fail early with clear instructions.
-        if variant == LamaVariant::BigLama {
-            bail!(
-                "big-LaMa weights are not yet available in safetensors format.\n\
-                 To use this model, convert the official checkpoint manually:\n\
-                 1. Download big-lama.pt from https://huggingface.co/smartywu/big-lama\n\
-                 2. Convert: python -c \"from safetensors.torch import save_file; \
-                 import torch; save_file(torch.load('big-lama.pt', map_location='cpu'), \
-                 'big-lama.safetensors')\"\n\
-                 3. Place big-lama.safetensors in your Koharu data directory under \
-                 hf-hub/smartywu/big-lama/"
-            );
-        }
-
         let device = device(cpu)?;
         let weights_path = runtime
             .downloads()
             .huggingface_model(variant.hf_repo(), variant.filename())
             .await?;
-        let model = loading::load_buffered_safetensors_path(&weights_path, &device, |vb| {
-            model::Lama::load(&vb)
-        })?;
+
+        let model = match variant {
+            LamaVariant::LamaManga => {
+                loading::load_buffered_safetensors_path(&weights_path, &device, |vb| {
+                    model::Lama::load(&vb)
+                })?
+            }
+            LamaVariant::BigLama => {
+                // big-lama.pt is a PyTorch Lightning checkpoint.
+                // candle's from_pth reads the pickle and gives us a flat
+                // tensor map.  Lightning checkpoints wrap everything under
+                // `state_dict`, and the LaMa trainer further nests the
+                // generator under `generator`.  Try both layouts:
+                //   • state_dict.generator.model.*  (Lightning full ckpt)
+                //   • generator.model.*             (plain state_dict save)
+                //   • model.*                       (generator-only save)
+                let vb = candle_nn::VarBuilder::from_pth(
+                    &weights_path,
+                    candle_core::DType::F32,
+                    &device,
+                )
+                .context("failed to open big-lama.pt")?;
+
+                // Try each prefix in order; use the first that loads.
+                let prefixes: &[&[&str]] = &[
+                    &["state_dict", "generator"],
+                    &["generator"],
+                    &[],
+                ];
+                let mut last_err = anyhow::anyhow!("no prefix matched");
+                let mut loaded = None;
+                for prefix in prefixes {
+                    let scoped = prefix.iter().fold(vb.clone(), |v, p: &&str| v.pp(*p));
+                    match model::Lama::load(&scoped) {
+                        Ok(m) => { loaded = Some(m); break; }
+                        Err(e) => { last_err = e; }
+                    }
+                }
+                loaded.ok_or(last_err)
+                    .context("big-lama.pt: could not find generator weights under any expected key prefix")?
+            }
+        };
 
         Ok(Self { model, device })
     }

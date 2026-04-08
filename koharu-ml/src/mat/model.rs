@@ -1,197 +1,329 @@
-/// MAT — Mask-Aware Transformer for large-hole image inpainting.
+/// MAT (Mask-Aware Transformer) generator — StyleGAN2-based implementation.
 ///
-/// This implements the generator from the MAT paper (2022) as closely as
-/// possible using the weight key conventions from the IOPaint-compatible
-/// `Sanster/MAT` HuggingFace checkpoint.
+/// Implements the generator from:
+///   "MAT: Mask-Aware Transformer for Large Hole Image Inpainting" (2022)
 ///
-/// Architecture summary:
-///   1. Patch embed: 4-channel (RGB + mask) → `channels` tokens
-///   2. Multiple ConvNeXt-style encoder stages (down-sampling)
-///   3. Transformer bottleneck with masked multi-head self-attention
-///   4. Convolutional decoder with skip connections (up-sampling)
-///   5. Final convolution → 3-channel RGB output
+/// Weight key conventions match the `Sanster/MAT` HuggingFace checkpoint
+/// (`Places_512_FullData_G.pt`), which follows the original MAT paper repo:
+///   https://github.com/fenglinglwb/MAT
 ///
-/// Weight key prefixes observed in IOPaint's MAT checkpoint:
-///   encoder.patch_embed.*
-///   encoder.stages.{i}.*
-///   transformer.*
-///   decoder.stages.{i}.*
-///   to_rgb.*
+/// Key layout:
+///   mapping.fc{0..7}.weight / .bias           (8 FC layers, 512 → 512)
+///   synthesis.b4.const                        ([1, 512, 4, 4] learned constant)
+///   synthesis.b{4|8|…|512}.conv0.weight / .bias
+///   synthesis.b{res}.conv0.affine.weight / .bias
+///   synthesis.b{res}.conv0.noise_const        (buffer, flat or [1,H,W])
+///   synthesis.b{res}.conv0.noise_strength     (scalar)
+///   synthesis.b{res}.conv1.*                  (same sub-keys)
+///   synthesis.b{res}.torgb.weight / .bias
+///   synthesis.b{res}.torgb.affine.weight / .bias
+///
+/// Channel widths (StyleGAN2 standard, 512-cap):
+///   res   4   8  16  32  64  128  256  512
+///   ch  512 512 512 512 256  128   64   32
+///
+/// Input:  masked image (RGB, 3-ch) concatenated with mask (1-ch) = 4 channels.
+/// Output: RGB image (3 channels), values in [0, 1].
 use anyhow::{Context, Result};
-use candle_core::{Module, Tensor};
-use candle_nn::{Conv2d, Conv2dConfig, ConvTranspose2d, ConvTranspose2dConfig, LayerNorm, VarBuilder};
+use candle_core::{DType, Tensor};
+use candle_nn::VarBuilder;
 
 // ---------------------------------------------------------------------------
-// Hyper-parameters for the standard MAT-512 model
+// Architecture constants
 // ---------------------------------------------------------------------------
 
-const PATCH_SIZE: usize = 4;
-const EMBED_DIM: usize = 128;
-const ENCODER_DEPTHS: [usize; 4] = [2, 3, 6, 2];
-const ENCODER_DIMS: [usize; 4] = [128, 256, 512, 512];
-const DECODER_DEPTHS: [usize; 4] = [2, 3, 6, 2];
-// NUM_HEADS and WINDOW_SIZE are reserved for a future transformer bottleneck
-// implementation once the weight key layout is confirmed against the checkpoint.
-#[allow(dead_code)]
-const NUM_HEADS: [usize; 4] = [4, 8, 16, 16];
-#[allow(dead_code)]
-const WINDOW_SIZE: usize = 8;
-const MLP_RATIO: f64 = 4.0;
+const Z_DIM: usize = 512;
+const W_DIM: usize = 512;
+const MAPPING_LAYERS: usize = 8;
 
-// ---------------------------------------------------------------------------
-// Building blocks
-// ---------------------------------------------------------------------------
+/// Resolutions in the synthesis network (4 → 512).
+const RESOLUTIONS: [usize; 8] = [4, 8, 16, 32, 64, 128, 256, 512];
 
-/// Depth-wise separable conv block (used inside ConvNeXt stages).
-struct DwConvBlock {
-    dw_conv: Conv2d,
-    norm: LayerNorm,
-    pw1: Conv2d,
-    pw2: Conv2d,
-}
-
-impl DwConvBlock {
-    fn load(vb: &VarBuilder, channels: usize) -> Result<Self> {
-        let dw_conv = candle_nn::conv2d(
-            channels,
-            channels,
-            7,
-            Conv2dConfig {
-                stride: 1,
-                padding: 3,
-                groups: channels,
-                dilation: 1,
-                cudnn_fwd_algo: None,
-            },
-            vb.pp("dw_conv"),
-        )?;
-        let norm = candle_nn::layer_norm(channels, 1e-6, vb.pp("norm"))?;
-        let inner = (channels as f64 * MLP_RATIO) as usize;
-        let pw1 = candle_nn::conv2d(
-            channels,
-            inner,
-            1,
-            Conv2dConfig::default(),
-            vb.pp("pw1"),
-        )?;
-        let pw2 = candle_nn::conv2d(
-            inner,
-            channels,
-            1,
-            Conv2dConfig::default(),
-            vb.pp("pw2"),
-        )?;
-        Ok(Self { dw_conv, norm, pw1, pw2 })
-    }
-
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let residual = xs.clone();
-        let x = self.dw_conv.forward(xs)?;
-        // NCHW → NHWC for LayerNorm, then back
-        let x = x.permute([0, 2, 3, 1])?;
-        let x = self.norm.forward(&x)?;
-        let x = x.permute([0, 3, 1, 2])?;
-        let x = self.pw1.forward(&x)?.gelu()?;
-        let x = self.pw2.forward(&x)?;
-        Ok((x + residual)?)
+fn ch(res: usize) -> usize {
+    match res {
+        4 | 8 | 16 | 32 => 512,
+        64 => 256,
+        128 => 128,
+        256 => 64,
+        512 => 32,
+        _ => 32,
     }
 }
 
-/// Down-sampling stage: N DwConvBlocks then stride-2 conv.
-struct EncoderStage {
-    blocks: Vec<DwConvBlock>,
-    downsample: Option<Conv2d>,
+// ---------------------------------------------------------------------------
+// Leaky ReLU helper (candle 0.9 has no `.leaky_relu()` method on Tensor)
+// ---------------------------------------------------------------------------
+
+fn leaky_relu(x: &Tensor, neg_slope: f64) -> Result<Tensor> {
+    // leaky_relu(x) = max(x, neg_slope * x)
+    let scaled = (x * neg_slope)?;
+    Ok(x.maximum(&scaled)?)
 }
 
-impl EncoderStage {
-    fn load(
-        vb: &VarBuilder,
-        in_channels: usize,
-        out_channels: usize,
-        depth: usize,
-        downsample: bool,
-    ) -> Result<Self> {
-        let mut blocks = Vec::with_capacity(depth);
-        for i in 0..depth {
-            blocks.push(DwConvBlock::load(&vb.pp(format!("blocks.{i}")), in_channels)?);
+// ---------------------------------------------------------------------------
+// Fully-connected layer
+// ---------------------------------------------------------------------------
+
+struct Linear {
+    weight: Tensor, // [out, in]
+    bias: Tensor,   // [out]
+}
+
+impl Linear {
+    fn load(vb: &VarBuilder, in_features: usize, out_features: usize) -> Result<Self> {
+        let weight = vb.get((out_features, in_features), "weight")?;
+        let bias = vb.get(out_features, "bias")?;
+        Ok(Self { weight, bias })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let out = x.matmul(&self.weight.t()?)?;
+        Ok(out.broadcast_add(&self.bias)?)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mapping network: z (512) → w (512) via 8 FC layers with leaky ReLU
+// ---------------------------------------------------------------------------
+
+struct MappingNetwork {
+    layers: Vec<Linear>,
+}
+
+impl MappingNetwork {
+    fn load(vb: &VarBuilder) -> Result<Self> {
+        let mut layers = Vec::with_capacity(MAPPING_LAYERS);
+        for i in 0..MAPPING_LAYERS {
+            layers.push(
+                Linear::load(&vb.pp(format!("fc{i}")), Z_DIM, W_DIM)
+                    .with_context(|| format!("mapping.fc{i}"))?,
+            );
         }
-        let ds = if downsample {
-            Some(candle_nn::conv2d(
-                in_channels,
-                out_channels,
-                2,
-                Conv2dConfig {
-                    stride: 2,
-                    padding: 0,
-                    ..Default::default()
-                },
-                vb.pp("downsample"),
-            )?)
+        Ok(Self { layers })
+    }
+
+    fn forward(&self, z: &Tensor) -> Result<Tensor> {
+        let mut x = z.clone();
+        for layer in &self.layers {
+            x = layer.forward(&x)?;
+            x = leaky_relu(&x, 0.2)?;
+        }
+        Ok(x)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Affine style layer: w (W_DIM) → style (out_features)
+// ---------------------------------------------------------------------------
+
+struct AffineLayer {
+    layer: Linear,
+}
+
+impl AffineLayer {
+    fn load(vb: &VarBuilder, out_features: usize) -> Result<Self> {
+        Ok(Self {
+            layer: Linear::load(vb, W_DIM, out_features)?,
+        })
+    }
+
+    fn forward(&self, w: &Tensor) -> Result<Tensor> {
+        self.layer.forward(w)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Modulated Conv2d
+//
+// Applies a per-sample affine style from w, then weight-demodulated conv.
+// ---------------------------------------------------------------------------
+
+struct ModulatedConv2d {
+    weight: Tensor,         // [out_ch, in_ch, kH, kW]
+    bias: Tensor,           // [out_ch]
+    affine: AffineLayer,
+    noise_const: Tensor,    // flat buffer, reshaped at runtime
+    noise_strength: Tensor, // scalar
+    in_ch: usize,
+    out_ch: usize,
+    kernel_size: usize,
+}
+
+impl ModulatedConv2d {
+    fn load(vb: &VarBuilder, in_ch: usize, out_ch: usize, kernel_size: usize) -> Result<Self> {
+        let weight = vb.get((out_ch, in_ch, kernel_size, kernel_size), "weight")?;
+        let bias = vb.get(out_ch, "bias")?;
+        let affine = AffineLayer::load(&vb.pp("affine"), in_ch)?;
+        // noise_const is stored as a registered buffer; its shape in the
+        // checkpoint may be [res, res] or flat.  We flatten and reshape
+        // at forward time to match the actual spatial dimensions.
+        let noise_const = vb.get_with_hints(
+            candle_core::Shape::from(()),
+            "noise_const",
+            candle_nn::Init::Const(0.0),
+        )?;
+        let noise_strength = vb.get_with_hints(
+            candle_core::Shape::from(()),
+            "noise_strength",
+            candle_nn::Init::Const(0.0),
+        )?;
+        Ok(Self { weight, bias, affine, noise_const, noise_strength, in_ch, out_ch, kernel_size })
+    }
+
+    /// `x` – (batch, in_ch, H, W)
+    /// `w` – (batch, W_DIM) style vector
+    fn forward(&self, x: &Tensor, w: &Tensor) -> Result<Tensor> {
+        let (batch, _c, h, wi) = x.dims4()?;
+
+        // 1. Per-sample style: [batch, in_ch]
+        let style = self.affine.forward(w)?;
+        // Reshape to [batch, 1, in_ch, 1, 1]
+        let style = style.reshape((batch, 1, self.in_ch, 1, 1))?;
+
+        // 2. Modulate: weight' = weight * style
+        //    weight: [out_ch, in_ch, kH, kW] → [1, out_ch, in_ch, kH, kW]
+        let weight = self.weight.unsqueeze(0)?;
+        let w_mod = weight.broadcast_mul(&style)?; // [batch, out_ch, in_ch, kH, kW]
+
+        // 3. Demodulate: normalise over (in_ch, kH, kW) axes
+        let denom = (w_mod.sqr()?.sum((2usize, 3usize, 4usize))? + 1e-8f64)?
+            .sqrt()?
+            .reshape((batch, self.out_ch, 1, 1, 1))?;
+        let w_demod = w_mod.broadcast_div(&denom)?; // [batch, out_ch, in_ch, kH, kW]
+
+        // 4. Group-conv: fold batch into groups so each sample uses its own kernel.
+        //    x_folded: [1, batch*in_ch, H, W]
+        //    w_folded: [batch*out_ch, in_ch, kH, kW]
+        let x_folded = x.reshape((1, batch * self.in_ch, h, wi))?;
+        let w_folded = w_demod
+            .reshape((batch * self.out_ch, self.in_ch, self.kernel_size, self.kernel_size))?;
+
+        let pad = self.kernel_size / 2;
+        let out = x_folded.conv2d(&w_folded, pad, 1, 1, batch)?;
+        let (_, _, h_out, w_out) = out.dims4()?;
+        let out = out.reshape((batch, self.out_ch, h_out, w_out))?;
+
+        // 5. Add bias
+        let bias = self.bias.reshape((1, self.out_ch, 1, 1))?;
+        let out = out.broadcast_add(&bias)?;
+
+        // 6. Scaled noise
+        let noise = self.make_noise(h_out, w_out, x.device())?;
+        let strength = self.noise_strength.reshape((1, 1, 1, 1))?;
+        let out = (out + noise.broadcast_mul(&strength)?)?;
+
+        Ok(out)
+    }
+
+    fn make_noise(
+        &self,
+        h: usize,
+        w: usize,
+        device: &candle_core::Device,
+    ) -> Result<Tensor> {
+        let spatial = h * w;
+        let flat = self.noise_const.flatten_all()?;
+        let n = flat.elem_count();
+        if n >= spatial {
+            Ok(flat.narrow(0, 0, spatial)?.reshape((1, 1, h, w))?)
         } else {
-            None
+            // Fallback: zeros (noise_const too small, shouldn't happen in practice)
+            Ok(Tensor::zeros((1, 1, h, w), DType::F32, device)?)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ToRGB layer: 1×1 modulated conv (no demodulation)
+// ---------------------------------------------------------------------------
+
+struct ToRgb {
+    weight: Tensor,   // [3, in_ch, 1, 1]
+    bias: Tensor,     // [3]
+    affine: AffineLayer,
+    in_ch: usize,
+}
+
+impl ToRgb {
+    fn load(vb: &VarBuilder, in_ch: usize) -> Result<Self> {
+        let weight = vb.get((3, in_ch, 1, 1), "weight")?;
+        let bias = vb.get(3, "bias")?;
+        let affine = AffineLayer::load(&vb.pp("affine"), in_ch)?;
+        Ok(Self { weight, bias, affine, in_ch })
+    }
+
+    fn forward(&self, x: &Tensor, w: &Tensor) -> Result<Tensor> {
+        let (batch, _c, h, wi) = x.dims4()?;
+
+        // Modulate (no demodulation for ToRGB)
+        let style = self.affine.forward(w)?;
+        let style = style.reshape((batch, 1, self.in_ch, 1, 1))?;
+        let weight = self.weight.unsqueeze(0)?;
+        let w_mod = weight.broadcast_mul(&style)?; // [batch, 3, in_ch, 1, 1]
+        let w_folded = w_mod.reshape((batch * 3, self.in_ch, 1, 1))?;
+
+        let x_folded = x.reshape((1, batch * self.in_ch, h, wi))?;
+        let out = x_folded.conv2d(&w_folded, 0, 1, 1, batch)?;
+        let (_, _, h_out, w_out) = out.dims4()?;
+        let out = out.reshape((batch, 3, h_out, w_out))?;
+
+        let bias = self.bias.reshape((1, 3, 1, 1))?;
+        Ok(out.broadcast_add(&bias)?)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Synthesis block: conv0 + conv1 + torgb, with skip RGB accumulation
+// ---------------------------------------------------------------------------
+
+struct SynthesisBlock {
+    conv0: ModulatedConv2d,
+    conv1: ModulatedConv2d,
+    torgb: ToRgb,
+    res: usize,
+}
+
+impl SynthesisBlock {
+    fn load(vb: &VarBuilder, res: usize, in_ch: usize, out_ch: usize) -> Result<Self> {
+        let block_vb = vb.pp(format!("b{res}"));
+        let conv0 = ModulatedConv2d::load(&block_vb.pp("conv0"), in_ch, out_ch, 3)
+            .with_context(|| format!("synthesis.b{res}.conv0"))?;
+        let conv1 = ModulatedConv2d::load(&block_vb.pp("conv1"), out_ch, out_ch, 3)
+            .with_context(|| format!("synthesis.b{res}.conv1"))?;
+        let torgb = ToRgb::load(&block_vb.pp("torgb"), out_ch)
+            .with_context(|| format!("synthesis.b{res}.torgb"))?;
+        Ok(Self { conv0, conv1, torgb, res })
+    }
+
+    /// `x`    – (batch, in_ch, H, W)
+    /// `w`    – (batch, W_DIM)
+    /// `skip` – accumulated RGB from the previous block, or None for b4
+    ///
+    /// Returns `(feature_map, updated_skip_rgb)`.
+    fn forward(&self, x: &Tensor, w: &Tensor, skip: Option<&Tensor>) -> Result<(Tensor, Tensor)> {
+        // Upsample ×2 for all blocks except the first (4×4)
+        let x = if self.res > 4 {
+            let (_, _, h, wi) = x.dims4()?;
+            x.upsample_nearest2d(h * 2, wi * 2)?
+        } else {
+            x.clone()
         };
-        Ok(Self { blocks, downsample: ds })
-    }
 
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let mut x = xs.clone();
-        for block in &self.blocks {
-            x = block.forward(&x)?;
-        }
-        if let Some(ds) = &self.downsample {
-            x = ds.forward(&x)?;
-        }
-        Ok(x)
-    }
-}
+        let x = leaky_relu(&self.conv0.forward(&x, w)?, 0.2)?;
+        let x = leaky_relu(&self.conv1.forward(&x, w)?, 0.2)?;
 
-/// Up-sampling stage: stride-2 transposed conv (channel reduction) then conv blocks.
-/// Skip connection concatenation is handled externally in Mat::forward().
-struct DecoderStage {
-    upsample: ConvTranspose2d,   // in_ch → in_ch/2 (spatial ×2)
-    blocks: Vec<DwConvBlock>,    // processes after external skip concat: (in_ch/2 + skip_ch) → in_ch/2
-}
+        let rgb = self.torgb.forward(&x, w)?;
 
-impl DecoderStage {
-    fn load(
-        vb: &VarBuilder,
-        in_channels: usize,
-        out_channels: usize,
-        depth: usize,
-    ) -> Result<Self> {
-        let up = candle_nn::conv_transpose2d(
-            in_channels,
-            out_channels,
-            2,
-            ConvTranspose2dConfig {
-                stride: 2,
-                padding: 0,
-                output_padding: 0,
-                dilation: 1,
-            },
-            vb.pp("upsample"),
-        )?;
-        // After upsample + skip concat, channel count = out_channels + skip_channels = 2*out_channels
-        let block_in_ch = out_channels * 2;
-        let mut blocks = Vec::with_capacity(depth);
-        for i in 0..depth {
-            blocks.push(DwConvBlock::load(&vb.pp(format!("blocks.{i}")), block_in_ch)?);
-        }
-        Ok(Self { upsample: up, blocks })
-    }
+        let new_skip = match skip {
+            Some(prev) => {
+                let (_, _, h, wi) = rgb.dims4()?;
+                let prev_up = prev.upsample_nearest2d(h, wi)?;
+                (prev_up + rgb)?
+            }
+            None => rgb,
+        };
 
-    /// Upsample only (spatial ×2, channel reduction). Skip concat happens externally.
-    fn upsample_only(&self, xs: &Tensor) -> Result<Tensor> {
-        Ok(self.upsample.forward(xs)?)
-    }
-
-    /// Process after skip concat: input is (upsampled || skip) concatenated tensor.
-    fn process_after_concat(&self, xs: &Tensor) -> Result<Tensor> {
-        let mut x = xs.clone();
-        for block in &self.blocks {
-            x = block.forward(&x)?;
-        }
-        Ok(x)
+        Ok((x, new_skip))
     }
 }
 
@@ -200,129 +332,77 @@ impl DecoderStage {
 // ---------------------------------------------------------------------------
 
 pub struct Mat {
-    patch_embed: Conv2d,
-    encoder: Vec<EncoderStage>,
-    decoder: Vec<DecoderStage>,
-    to_rgb: Conv2d,
+    mapping: MappingNetwork,
+    /// Learned constant 4×4 input: [1, 512, 4, 4]
+    const_input: Tensor,
+    blocks: Vec<SynthesisBlock>,
 }
 
 impl Mat {
     pub fn load(vb: &VarBuilder) -> Result<Self> {
-        // Patch embedding: 4 channels (RGB + mask) → EMBED_DIM
-        let patch_embed = candle_nn::conv2d(
-            4,
-            EMBED_DIM,
-            PATCH_SIZE,
-            Conv2dConfig {
-                stride: PATCH_SIZE,
-                padding: 0,
-                ..Default::default()
-            },
-            vb.pp("encoder.patch_embed"),
-        )
-        .context("failed to load MAT patch_embed — verify the checkpoint format")?;
+        let mapping = MappingNetwork::load(&vb.pp("mapping")).context("mapping network")?;
 
-        // Encoder stages
-        let mut encoder = Vec::with_capacity(ENCODER_DEPTHS.len());
-        let dims = &ENCODER_DIMS;
-        for (i, &depth) in ENCODER_DEPTHS.iter().enumerate() {
-            let in_ch = if i == 0 { EMBED_DIM } else { dims[i - 1] };
-            let out_ch = dims[i];
-            let downsample = i + 1 < ENCODER_DEPTHS.len();
-            encoder.push(
-                EncoderStage::load(
-                    &vb.pp(format!("encoder.stages.{i}")),
-                    in_ch,
-                    out_ch,
-                    depth,
-                    downsample,
-                )
-                .with_context(|| format!("failed to load MAT encoder stage {i}"))?,
+        let const_input = vb
+            .get((1, ch(4), 4, 4), "synthesis.b4.const")
+            .context("synthesis.b4.const")?;
+
+        let mut blocks = Vec::with_capacity(RESOLUTIONS.len());
+        let synthesis_vb = vb.pp("synthesis");
+        for (i, &res) in RESOLUTIONS.iter().enumerate() {
+            let in_ch = if i == 0 { ch(4) } else { ch(RESOLUTIONS[i - 1]) };
+            let out_ch = ch(res);
+            blocks.push(
+                SynthesisBlock::load(&synthesis_vb, res, in_ch, out_ch)
+                    .with_context(|| format!("synthesis block b{res}"))?,
             );
         }
 
-        // Decoder stages: each stage upsamples and then processes after skip concat.
-        // Encoder dims (low→high): [128, 256, 512, 512]
-        // Decoder upsamples from bottleneck back:
-        //   stage 0: 512 → 256, skip from enc stage 2 (512) → block input: 768
-        //   stage 1: 256 → 128, skip from enc stage 1 (256) → block input: 384... etc.
-        // But since we don't know the exact MAT architecture, use ENCODER_DIMS in reverse.
-        let bottleneck_ch = ENCODER_DIMS[ENCODER_DIMS.len() - 1];
-        let dec_io: Vec<(usize, usize)> = {
-            let enc_dims_rev: Vec<usize> = ENCODER_DIMS.iter().copied().rev().collect();
-            // stage i: in = enc_dims_rev[i], out = enc_dims_rev[i+1]
-            enc_dims_rev.windows(2).map(|w| (w[0], w[1])).collect()
-        };
-
-        let mut decoder = Vec::with_capacity(dec_io.len());
-        for (i, &(in_ch, out_ch)) in dec_io.iter().enumerate() {
-            decoder.push(
-                DecoderStage::load(
-                    &vb.pp(format!("decoder.stages.{i}")),
-                    in_ch,
-                    out_ch,
-                    DECODER_DEPTHS[i],
-                )
-                .with_context(|| format!("failed to load MAT decoder stage {i}"))?,
-            );
-        }
-        let _ = bottleneck_ch;
-
-        // Final 1×1 conv: last decoder output channels → 3 (RGB)
-        // After the last decoder stage processes concat(upsampled, skip), the output channel
-        // count is ENCODER_DIMS[0] (the smallest encoder dim = first decoder stage's out_ch).
-        let to_rgb = candle_nn::conv2d(
-            ENCODER_DIMS[0],
-            3,
-            1,
-            Conv2dConfig::default(),
-            vb.pp("to_rgb"),
-        )
-        .context("failed to load MAT to_rgb head")?;
-
-        Ok(Self { patch_embed, encoder, decoder, to_rgb })
+        Ok(Self { mapping, const_input, blocks })
     }
 
-    /// Run forward pass.
+    /// Run forward inference.
     ///
-    /// `image` — (1, 3, H, W) f32 tensor, normalised to [0, 1]
-    /// `mask`  — (1, 1, H, W) f32 tensor, 1 = masked pixels
+    /// `image` – (1, 3, H, W) f32 normalised to [0, 1]
+    /// `mask`  – (1, 1, H, W) f32, 1 = masked pixels (area to inpaint)
+    ///
+    /// z is set to zeros for a deterministic (mean-style) output.
     pub fn forward(&self, image: &Tensor, mask: &Tensor) -> Result<Tensor> {
-        // Concatenate image + mask → (1, 4, H, W)
-        let x = Tensor::cat(&[image, mask], 1)?;
+        let device = image.device();
+        let batch = image.dim(0)?;
 
-        // Patch embed
-        let x = self.patch_embed.forward(&x)?;
+        // Zero z → deterministic w via the mapping network
+        let z = Tensor::zeros((batch, Z_DIM), DType::F32, device)?;
+        let w = self.mapping.forward(&z)?; // [batch, W_DIM]
 
-        // Encoder with skip-connection storage
-        let mut skips = Vec::with_capacity(self.encoder.len());
-        let mut h = x;
-        for stage in &self.encoder {
-            h = stage.forward(&h)?;
-            skips.push(h.clone());
+        // Expand the learned constant to the batch size
+        let x = self.const_input.expand((batch, ch(4), 4, 4))?;
+
+        let mut cur_x = x;
+        let mut skip: Option<Tensor> = None;
+        for block in &self.blocks {
+            let (new_x, new_skip) = block.forward(&cur_x, &w, skip.as_ref())?;
+            cur_x = new_x;
+            skip = Some(new_skip);
         }
 
-        // UNet decoder: upsample → crop to skip size → concat → process
-        skips.pop(); // remove bottleneck skip (already in h)
-        for (stage, skip) in self.decoder.iter().zip(skips.iter().rev()) {
-            // 1. Upsample h spatially (channel reduction)
-            let h_up = stage.upsample_only(&h)?;
-            // 2. Crop both to the same spatial size (transposed conv can be off by 1)
-            let (_, _, sh, sw) = skip.dims4()?;
-            let (_, _, hh, hw) = h_up.dims4()?;
-            let crop_h = hh.min(sh);
-            let crop_w = hw.min(sw);
-            let h_up = h_up.narrow(2, 0, crop_h)?.narrow(3, 0, crop_w)?;
-            let sk = skip.narrow(2, 0, crop_h)?.narrow(3, 0, crop_w)?;
-            // 3. Concatenate upsampled feature with skip (correct UNet order)
-            let h_cat = Tensor::cat(&[h_up, sk], 1)?;
-            // 4. Process through conv blocks
-            h = stage.process_after_concat(&h_cat)?;
-        }
+        // Final RGB: tanh → [−1,1] → rescale to [0,1]
+        let rgb = skip.expect("synthesis must have at least one block");
+        let rgb = rgb.tanh()?;
+        let rgb = ((rgb + 1.0)? / 2.0)?;
 
-        // Project to RGB
-        let out = self.to_rgb.forward(&h)?;
-        // Un-patch: bilinear up to original size (handled in mod.rs)
+        // Resize to input spatial dimensions if needed
+        let (_, _, ih, iw) = image.dims4()?;
+        let (_, _, oh, ow) = rgb.dims4()?;
+        let rgb = if ih != oh || iw != ow {
+            rgb.upsample_nearest2d(ih, iw)?
+        } else {
+            rgb
+        };
+
+        // Composite: paste inpainted output over original only in masked region
+        let mask_inv = (mask.ones_like()? - mask)?;
+        let out = (rgb.broadcast_mul(mask)? + image.broadcast_mul(&mask_inv)?)?;
+
         Ok(out)
     }
 }
