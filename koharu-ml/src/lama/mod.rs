@@ -99,6 +99,23 @@ impl Lama {
         cpu: bool,
         variant: LamaVariant,
     ) -> Result<Self> {
+        // big-LaMa upstream (`smartywu/big-lama`) only ships a PyTorch `.pt`
+        // checkpoint, not safetensors. The downloader would get a 404 for
+        // `big-lama.safetensors`. Until koharu adds PyTorch pickle loading or
+        // a safetensors mirror is published, fail early with clear instructions.
+        if variant == LamaVariant::BigLama {
+            bail!(
+                "big-LaMa weights are not yet available in safetensors format.\n\
+                 To use this model, convert the official checkpoint manually:\n\
+                 1. Download big-lama.pt from https://huggingface.co/smartywu/big-lama\n\
+                 2. Convert: python -c \"from safetensors.torch import save_file; \
+                 import torch; save_file(torch.load('big-lama.pt', map_location='cpu'), \
+                 'big-lama.safetensors')\"\n\
+                 3. Place big-lama.safetensors in your Koharu data directory under \
+                 hf-hub/smartywu/big-lama/"
+            );
+        }
+
         let device = device(cpu)?;
         let weights_path = runtime
             .downloads()

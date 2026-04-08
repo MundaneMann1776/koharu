@@ -92,28 +92,51 @@ impl AppleVisionOcr {
         }
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped()); // capture stderr for diagnostics
 
         let mut child = cmd
             .spawn()
             .context("failed to spawn apple-vision-ocr-helper; copy it next to the koharu executable or add it to PATH")?;
 
-        // Write PNG to helper stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(&png_bytes)
-                .context("failed to write image to apple-vision-ocr-helper stdin")?;
-        }
+        // Write PNG to stdin in a background thread to avoid pipe deadlock:
+        // if the PNG is large enough to fill the kernel pipe buffer, a
+        // synchronous write blocks until the child reads — but if the child
+        // is also blocked writing stdout before reading stdin, we deadlock.
+        let stdin_handle = child.stdin.take().map(|mut stdin| {
+            let bytes = png_bytes; // move into closure
+            std::thread::spawn(move || stdin.write_all(&bytes))
+        });
 
         let output = child
             .wait_with_output()
             .context("apple-vision-ocr-helper process failed")?;
 
+        // Join the stdin writer (ignore its error — write failure shows up below)
+        if let Some(handle) = stdin_handle {
+            let _ = handle.join();
+        }
+
+        // Check exit status
+        if !output.status.success() {
+            let stderr_msg = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "apple-vision-ocr-helper exited with {}: {}",
+                output.status,
+                stderr_msg.trim()
+            );
+        }
+
         let json = std::str::from_utf8(&output.stdout)
             .context("apple-vision-ocr-helper produced non-UTF-8 output")?;
 
         let result: HelperOutput = serde_json::from_str(json.trim())
-            .with_context(|| format!("failed to parse apple-vision-ocr-helper output: {json}"))?;
+            .with_context(|| {
+                let stderr_msg = String::from_utf8_lossy(&output.stderr);
+                format!(
+                    "failed to parse apple-vision-ocr-helper output: {json}\nstderr: {}",
+                    stderr_msg.trim()
+                )
+            })?;
 
         if let Some(err) = result.error {
             bail!("Apple Vision OCR error: {err}");

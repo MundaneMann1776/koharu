@@ -223,7 +223,7 @@ impl PaddleOcrVl {
         cpu: bool,
         backend: Arc<LlamaBackend>,
     ) -> Result<Self> {
-        let files = resolve_local_model_files(dir.as_ref())?;
+        let files = resolve_local_model_files(dir.as_ref(), VisionOcrBackend::PaddleOcrVl15)?;
         Self::load_from_files(runtime, files, cpu, backend)
     }
 
@@ -481,9 +481,9 @@ async fn download_model_files(
     Ok(ModelFiles { model, mmproj })
 }
 
-fn resolve_local_model_files(dir: &Path) -> Result<ModelFiles> {
-    let preferred_model = dir.join(PADDLE_MODEL);
-    let preferred_mmproj = dir.join(PADDLE_MMPROJ);
+fn resolve_local_model_files(dir: &Path, ocr_backend: VisionOcrBackend) -> Result<ModelFiles> {
+    let preferred_model = dir.join(ocr_backend.model_filename());
+    let preferred_mmproj = dir.join(ocr_backend.mmproj_filename());
     if preferred_model.exists() && preferred_mmproj.exists() {
         return Ok(ModelFiles {
             model: preferred_model,

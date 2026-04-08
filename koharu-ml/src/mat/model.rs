@@ -145,10 +145,11 @@ impl EncoderStage {
     }
 }
 
-/// Up-sampling stage: stride-2 transposed conv then N DwConvBlocks.
+/// Up-sampling stage: stride-2 transposed conv (channel reduction) then conv blocks.
+/// Skip connection concatenation is handled externally in Mat::forward().
 struct DecoderStage {
-    upsample: Option<ConvTranspose2d>,
-    blocks: Vec<DwConvBlock>,
+    upsample: ConvTranspose2d,   // in_ch → in_ch/2 (spatial ×2)
+    blocks: Vec<DwConvBlock>,    // processes after external skip concat: (in_ch/2 + skip_ch) → in_ch/2
 }
 
 impl DecoderStage {
@@ -157,38 +158,36 @@ impl DecoderStage {
         in_channels: usize,
         out_channels: usize,
         depth: usize,
-        upsample: bool,
     ) -> Result<Self> {
-        let up = if upsample {
-            Some(candle_nn::conv_transpose2d(
-                in_channels,
-                out_channels,
-                2,
-                ConvTranspose2dConfig {
-                    stride: 2,
-                    padding: 0,
-                    output_padding: 0,
-                    dilation: 1,
-                },
-                vb.pp("upsample"),
-            )?)
-        } else {
-            None
-        };
-        let ch = if upsample { out_channels } else { in_channels };
+        let up = candle_nn::conv_transpose2d(
+            in_channels,
+            out_channels,
+            2,
+            ConvTranspose2dConfig {
+                stride: 2,
+                padding: 0,
+                output_padding: 0,
+                dilation: 1,
+            },
+            vb.pp("upsample"),
+        )?;
+        // After upsample + skip concat, channel count = out_channels + skip_channels = 2*out_channels
+        let block_in_ch = out_channels * 2;
         let mut blocks = Vec::with_capacity(depth);
         for i in 0..depth {
-            blocks.push(DwConvBlock::load(&vb.pp(format!("blocks.{i}")), ch)?);
+            blocks.push(DwConvBlock::load(&vb.pp(format!("blocks.{i}")), block_in_ch)?);
         }
         Ok(Self { upsample: up, blocks })
     }
 
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let mut x = if let Some(up) = &self.upsample {
-            up.forward(xs)?
-        } else {
-            xs.clone()
-        };
+    /// Upsample only (spatial ×2, channel reduction). Skip concat happens externally.
+    fn upsample_only(&self, xs: &Tensor) -> Result<Tensor> {
+        Ok(self.upsample.forward(xs)?)
+    }
+
+    /// Process after skip concat: input is (upsampled || skip) concatenated tensor.
+    fn process_after_concat(&self, xs: &Tensor) -> Result<Tensor> {
+        let mut x = xs.clone();
         for block in &self.blocks {
             x = block.forward(&x)?;
         }
@@ -242,43 +241,38 @@ impl Mat {
             );
         }
 
-        // Decoder stages (reverse dims, skip connections handled via concat)
-        let rev_dims: Vec<usize> = dims.iter().copied().rev().collect();
-        let dec_in_dims: Vec<usize> = rev_dims
-            .windows(2)
-            .map(|w| w[0] + w[1]) // skip connections
-            .chain(std::iter::once(rev_dims[rev_dims.len() - 1]))
-            .collect();
-        let dec_out_dims: Vec<usize> = rev_dims[1..].to_vec();
+        // Decoder stages: each stage upsamples and then processes after skip concat.
+        // Encoder dims (low→high): [128, 256, 512, 512]
+        // Decoder upsamples from bottleneck back:
+        //   stage 0: 512 → 256, skip from enc stage 2 (512) → block input: 768
+        //   stage 1: 256 → 128, skip from enc stage 1 (256) → block input: 384... etc.
+        // But since we don't know the exact MAT architecture, use ENCODER_DIMS in reverse.
+        let bottleneck_ch = ENCODER_DIMS[ENCODER_DIMS.len() - 1];
+        let dec_io: Vec<(usize, usize)> = {
+            let enc_dims_rev: Vec<usize> = ENCODER_DIMS.iter().copied().rev().collect();
+            // stage i: in = enc_dims_rev[i], out = enc_dims_rev[i+1]
+            enc_dims_rev.windows(2).map(|w| (w[0], w[1])).collect()
+        };
 
-        let mut decoder = Vec::with_capacity(DECODER_DEPTHS.len());
-        for (i, &depth) in DECODER_DEPTHS.iter().enumerate() {
-            let in_ch = if i < dec_in_dims.len() {
-                dec_in_dims[i]
-            } else {
-                EMBED_DIM
-            };
-            let out_ch = if i < dec_out_dims.len() {
-                dec_out_dims[i]
-            } else {
-                EMBED_DIM
-            };
-            let upsample = true;
+        let mut decoder = Vec::with_capacity(dec_io.len());
+        for (i, &(in_ch, out_ch)) in dec_io.iter().enumerate() {
             decoder.push(
                 DecoderStage::load(
                     &vb.pp(format!("decoder.stages.{i}")),
                     in_ch,
                     out_ch,
-                    depth,
-                    upsample,
+                    DECODER_DEPTHS[i],
                 )
                 .with_context(|| format!("failed to load MAT decoder stage {i}"))?,
             );
         }
+        let _ = bottleneck_ch;
 
-        // Final 1×1 conv: EMBED_DIM → 3 (RGB)
+        // Final 1×1 conv: last decoder output channels → 3 (RGB)
+        // After the last decoder stage processes concat(upsampled, skip), the output channel
+        // count is ENCODER_DIMS[0] (the smallest encoder dim = first decoder stage's out_ch).
         let to_rgb = candle_nn::conv2d(
-            EMBED_DIM,
+            ENCODER_DIMS[0],
             3,
             1,
             Conv2dConfig::default(),
@@ -308,22 +302,22 @@ impl Mat {
             skips.push(h.clone());
         }
 
-        // Decoder (reverse skips, concat at each level)
-        skips.pop(); // don't concat the bottleneck with itself
+        // UNet decoder: upsample → crop to skip size → concat → process
+        skips.pop(); // remove bottleneck skip (already in h)
         for (stage, skip) in self.decoder.iter().zip(skips.iter().rev()) {
-            let h_up = stage.forward(&h)?;
-            // Spatial dims may differ by 1 pixel after transposed conv; crop to match
+            // 1. Upsample h spatially (channel reduction)
+            let h_up = stage.upsample_only(&h)?;
+            // 2. Crop both to the same spatial size (transposed conv can be off by 1)
             let (_, _, sh, sw) = skip.dims4()?;
             let (_, _, hh, hw) = h_up.dims4()?;
             let crop_h = hh.min(sh);
             let crop_w = hw.min(sw);
             let h_up = h_up.narrow(2, 0, crop_h)?.narrow(3, 0, crop_w)?;
             let sk = skip.narrow(2, 0, crop_h)?.narrow(3, 0, crop_w)?;
-            h = Tensor::cat(&[h_up, sk], 1)?;
-        }
-        // Final stage without skip
-        if let Some(last_stage) = self.decoder.last() {
-            h = last_stage.forward(&h)?;
+            // 3. Concatenate upsampled feature with skip (correct UNet order)
+            let h_cat = Tensor::cat(&[h_up, sk], 1)?;
+            // 4. Process through conv blocks
+            h = stage.process_after_concat(&h_cat)?;
         }
 
         // Project to RGB

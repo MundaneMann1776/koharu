@@ -18,6 +18,9 @@ use crate::{
 use self::model::Mat as MatModel;
 
 const HF_REPO: &str = "Sanster/MAT";
+// The upstream checkpoint is `Places_512_FullData_G.pt` (PyTorch pickle).
+// This constant names a safetensors conversion that does not yet exist upstream;
+// users must convert it manually (see Mat::load error message below).
 const WEIGHTS_FILE: &str = "Places_512_FullData_G.safetensors";
 
 /// Longest side to which the input image is scaled before MAT inference.
@@ -38,9 +41,36 @@ pub struct Mat {
 }
 
 impl Mat {
-    pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
-        let device = device(cpu)?;
-        let weights_path = runtime
+    pub async fn load(_runtime: &RuntimeManager, _cpu: bool) -> Result<Self> {
+        // Sanster/MAT only ships `Places_512_FullData_G.pt` (PyTorch pickle).
+        // koharu's model loader requires safetensors. Convert first:
+        //   python -c "from safetensors.torch import save_file; import torch; \
+        //   ckpt = torch.load('Places_512_FullData_G.pt', map_location='cpu'); \
+        //   save_file(ckpt, 'Places_512_FullData_G.safetensors')"
+        // then place the output in your Koharu data dir under hf-hub/Sanster/MAT/
+        //
+        // Additionally, the MAT architecture implementation in model.rs is an
+        // approximation; weight key names may not match until tested against the
+        // actual checkpoint. Expect a descriptive load error if they differ.
+        bail!(
+            "MAT inpainting is not yet ready for use.\n\
+             The upstream checkpoint (Sanster/MAT) is a PyTorch .pt file; \
+             koharu requires safetensors.\n\
+             Steps to enable:\n\
+             1. Download Places_512_FullData_G.pt from \
+             https://huggingface.co/Sanster/MAT\n\
+             2. Convert: python -c \"from safetensors.torch import save_file; \
+             import torch; save_file(torch.load('Places_512_FullData_G.pt', \
+             map_location='cpu'), 'Places_512_FullData_G.safetensors')\"\n\
+             3. Place the .safetensors file in your Koharu data dir at \
+             hf-hub/Sanster/MAT/\n\
+             This message will be removed once the weight key layout is confirmed."
+        );
+
+        #[allow(unreachable_code)]
+        {
+        let device = device(_cpu)?;
+        let weights_path = _runtime
             .downloads()
             .huggingface_model(HF_REPO, WEIGHTS_FILE)
             .await?;
@@ -53,6 +83,7 @@ impl Mat {
         )?;
 
         Ok(Self { model, device })
+        } // end #[allow(unreachable_code)]
     }
 
     #[instrument(level = "debug", skip_all)]
@@ -124,12 +155,13 @@ impl Mat {
 
 fn image_to_tensor(img: &RgbImage, device: &Device) -> Result<Tensor> {
     let (w, h) = img.dimensions();
-    let data: Vec<f32> = img.pixels().flat_map(|p| {
-        let [r, g, b] = p.0;
-        [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
-    }).collect();
-    // (H*W*C) → (1, C, H, W)
-    Tensor::from_vec(data, (1, 3, h as usize, w as usize), device)?
+    let raw = img.as_raw(); // [r0, g0, b0, r1, g1, b1, ...]
+    // Separate into plane-per-channel for CHW layout
+    let r: Vec<f32> = raw.iter().step_by(3).map(|&v| v as f32 / 255.0).collect();
+    let g: Vec<f32> = raw.iter().skip(1).step_by(3).map(|&v| v as f32 / 255.0).collect();
+    let b: Vec<f32> = raw.iter().skip(2).step_by(3).map(|&v| v as f32 / 255.0).collect();
+    let data: Vec<f32> = r.into_iter().chain(g).chain(b).collect();
+    Tensor::from_vec(data, (1usize, 3, h as usize, w as usize), device)?
         .to_dtype(DType::F32)
         .context("image tensor conversion failed")
 }
