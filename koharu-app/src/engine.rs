@@ -1188,6 +1188,53 @@ inventory::submit! {
     }
 }
 
+// --- MAT Inpainting -------------------------------------------------------
+
+struct MatInpaintEngine(koharu_ml::mat::Mat);
+
+#[async_trait]
+impl Engine for MatInpaintEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        let seg_ref = doc
+            .segment
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no segment mask"))?;
+        let (source, segment) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let segment: SerializableDynamicImage = res.storage.images.load(seg_ref)?.into();
+            (source, segment)
+        };
+        let result = {
+            let _s = tracing::info_span!("inference").entered();
+            self.0.inference(&source, &segment)?
+        };
+        let blob = {
+            let _s = tracing::info_span!("save").entered();
+            res.storage.images.store_webp(&result)?
+        };
+        Ok(Patch::apply(|doc| doc.inpainted = Some(blob)))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "mat",
+        name: "MAT (Mask-Aware Transformer)",
+        needs: &[Artifact::Segment],
+        produces: &[Artifact::Inpainted],
+        load: |res| Box::pin(async move {
+            let m = koharu_ml::mat::Mat::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            Ok(Box::new(MatInpaintEngine(m)) as Box<dyn Engine>)
+        }),
+    }
+}
+
 // --- AOT Inpainting -------------------------------------------------------
 
 struct AotInpaintEngine(koharu_ml::aot_inpainting::AotInpainting);
