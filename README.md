@@ -9,7 +9,7 @@ Koharu introduces a local-first workflow for manga translation, utilizing the po
 Under the hood, Koharu uses [candle](https://github.com/huggingface/candle) and [llama.cpp](https://github.com/ggml-org/llama.cpp) for high-performance inference, with [Tauri](https://github.com/tauri-apps/tauri) for the desktop app. All components are written in Rust, ensuring safety and speed.
 
 > [!NOTE]
-> Koharu runs its vision models and LLMs **locally** on your machine by default. Koharu itself does not collect any user data.
+> Koharu runs its vision models and LLMs **locally** on your machine to keep your data private and secure.
 
 ---
 
@@ -24,7 +24,7 @@ Under the hood, Koharu uses [candle](https://github.com/huggingface/candle) and 
 - OCR for manga dialogue, captions, and other page text
 - Inpainting to remove source lettering from the page
 - Translation with local or remote LLM backends
-- Vertical CJK layout and text rendering
+- Advanced text rendering with vertical CJK and RTL support
 - Layered PSD export with editable text
 - Local HTTP API and MCP server for automation
 
@@ -90,19 +90,19 @@ The catalog includes a small set of comic-friendly recommended families. Once ca
 
 ### Text Rendering
 
-Koharu uses a dedicated text renderer rather than browser or OS text primitives. The stack combines [HarfRust](https://crates.io/crates/harfrust) for [HarfBuzz](https://harfbuzz.github.io/)-style OpenType shaping, [ICU4X](https://github.com/unicode-org/icu4x) line segmentation, custom layout engine, real font metrics and glyph bounds from [`skrifa`](https://github.com/googlefonts/fontations/tree/main/skrifa), and [`tiny-skia`](https://github.com/linebender/tiny-skia) for rasterization.
+Koharu includes a dedicated text renderer tuned for manga lettering, using Unicode-aware [OpenType](https://learn.microsoft.com/en-us/typography/opentype/spec/) shaping, script-aware line breaking, precise glyph metrics, and real glyph bounds instead of generic browser or OS text primitives.
 
-The renderer is tuned for manga lettering rather than generic UI text. It supports vertical CJK and horizontal Latin layout, script-aware normalization, font fallback, vertical punctuation centering, automatic size fitting against layout constraints, and manga-oriented stroke and effect passes before compositing text back onto the page.
+It supports vertical CJK layout, right-to-left scripts, font fallback, vertical punctuation alignment, constrained-box fitting, and manga-oriented stroke and effect compositing so translated text reads naturally inside speech bubbles, captions, and other irregular page layouts.
 
 ## GPU Acceleration
 
-Koharu supports CUDA, Metal, and Vulkan. CPU fallback is always available when the accelerated path is unavailable or not worth the setup cost on your system.
+Koharu supports CUDA, experimental ZLUDA, Metal, and Vulkan. CPU fallback is always available when the accelerated path is unavailable or not worth the setup cost on your system.
 
 ### CUDA (NVIDIA GPUs on Windows)
 
 On Windows, Koharu ships with CUDA support so it can use NVIDIA GPUs for the full local pipeline.
 
-Koharu bundles CUDA Toolkit 13.1. The required DLLs are extracted to the application data directory on first run.
+Koharu bundles CUDA Toolkit 13.0. The required DLLs are extracted to the application data directory on first run.
 
 > [!NOTE]
 > Make sure you have current NVIDIA drivers installed. You can update them through [NVIDIA App](https://www.nvidia.com/en-us/software/nvidia-app/).
@@ -111,7 +111,14 @@ Koharu bundles CUDA Toolkit 13.1. The required DLLs are extracted to the applica
 
 Koharu supports NVIDIA GPUs with compute capability 7.5 or higher.
 
-For GPU compatibility references, see [CUDA GPU Compute Capability](https://developer.nvidia.com/cuda-gpus) and the [cuDNN Support Matrix](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/support-matrix.html).
+For GPU compatibility references, see [CUDA GPU Compute Capability](https://developer.nvidia.com/cuda-gpus).
+
+### ZLUDA (AMD GPUs on Windows, experimental)
+
+Koharu supports experimental ZLUDA acceleration on Windows for AMD GPUs.
+ZLUDA is a CUDA compatibility layer that lets some CUDA workloads run on AMD GPUs.
+
+To use it, install the [AMD HIP SDK](https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html).
 
 ### Metal (Apple Silicon on macOS)
 
@@ -121,7 +128,7 @@ Koharu supports Metal on Apple Silicon Macs. No extra runtime setup is required 
 
 Koharu also supports Vulkan on Windows and Linux. This backend is currently used primarily for OCR and local LLM inference.
 
-Detection and inpainting still depend on CUDA or Metal, so Vulkan is useful but not a full replacement for the main accelerated path. AMD and Intel GPUs can still benefit from it, but the best all-around experience is still NVIDIA on Windows or Apple Silicon on macOS.
+Detection and inpainting still depend on CUDA, ZLUDA, or Metal, so Vulkan is useful but not a full replacement for the main accelerated path. AMD and Intel GPUs can still benefit from it.
 
 ### CPU Fallback
 
@@ -243,6 +250,9 @@ To build Koharu from source, follow the steps below.
 
 - [Rust](https://www.rust-lang.org/tools/install) 1.92 or later
 - [Bun](https://bun.sh/) 1.0 or later
+- [LLVM](https://llvm.org/) 15 or later (for GPU acceleration builds)
+- [CUDA Toolkit](https://developer.nvidia.com/cuda-13-0-0-download-archive) 13.0 (for CUDA and ZLUDA support on Windows)
+- [AMD HIP SDK](https://www.amd.com/en/developer/resources/rocm-hub/hip-sdk.html) (for ZLUDA support on Windows)
 
 ### Install dependencies
 
@@ -250,16 +260,16 @@ To build Koharu from source, follow the steps below.
 bun install
 ```
 
+### Development
+
+```bash
+bun dev
+```
+
 ### Build
 
 ```bash
 bun run build
-```
-
-If you want more direct control over the Tauri build:
-
-```bash
-bun tauri build --release --no-bundle
 ```
 
 The built binaries are written to `target/release`.

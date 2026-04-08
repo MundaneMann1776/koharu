@@ -1,3 +1,4 @@
+use harfrust::Direction;
 use icu::properties::{CodePointMapData, props::Script};
 use koharu_core::TextBlock;
 
@@ -34,17 +35,60 @@ pub fn normalize_translation_for_layout(text: &str) -> String {
     }
 }
 
-pub fn font_families_for_text(text: &str) -> Vec<String> {
+pub(crate) struct ScriptFlags {
+    pub has_cjk: bool,
+    pub has_arabic: bool,
+    pub has_thai: bool,
+}
+
+pub(crate) fn detect_scripts(text: &str) -> ScriptFlags {
     let script_map = CodePointMapData::<Script>::new();
-    let has_cjk = text.chars().any(|c| {
-        matches!(
-            script_map.get(c),
-            Script::Han | Script::Hiragana | Script::Katakana | Script::Hangul | Script::Bopomofo
-        )
-    });
-    let has_arabic = text
-        .chars()
-        .any(|c| matches!(script_map.get(c), Script::Arabic | Script::Hebrew));
+    let (mut has_cjk, mut has_arabic, mut has_thai) = (false, false, false);
+    for c in text.chars() {
+        match script_map.get(c) {
+            Script::Han
+            | Script::Hiragana
+            | Script::Katakana
+            | Script::Hangul
+            | Script::Bopomofo => has_cjk = true,
+            Script::Arabic
+            | Script::Hebrew
+            | Script::Syriac
+            | Script::Thaana
+            | Script::Nko
+            | Script::Adlam => has_arabic = true,
+            Script::Thai | Script::Lao | Script::Khmer | Script::Myanmar => has_thai = true,
+            _ => {}
+        }
+        if has_cjk && has_arabic && has_thai {
+            break;
+        }
+    }
+    ScriptFlags {
+        has_cjk,
+        has_arabic,
+        has_thai,
+    }
+}
+
+pub fn shaping_direction_for_text(text: &str, writing_mode: WritingMode) -> Direction {
+    if writing_mode.is_vertical() {
+        return Direction::TopToBottom;
+    }
+
+    if detect_scripts(text).has_arabic {
+        Direction::RightToLeft
+    } else {
+        Direction::LeftToRight
+    }
+}
+
+pub fn font_families_for_text(text: &str) -> Vec<String> {
+    let ScriptFlags {
+        has_cjk,
+        has_arabic,
+        has_thai,
+    } = detect_scripts(text);
 
     let names: &[&str] = if has_cjk {
         #[cfg(target_os = "windows")]
@@ -71,6 +115,19 @@ pub fn font_families_for_text(text: &str) -> Vec<String> {
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
             &["Noto Sans"]
+        }
+    } else if has_thai {
+        #[cfg(target_os = "windows")]
+        {
+            &["Leelawadee UI", "Leelawadee", "Tahoma"]
+        }
+        #[cfg(target_os = "macos")]
+        {
+            &["Thonburi", "Ayuthaya"]
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            &["Noto Sans Thai", "Noto Sans"]
         }
     } else {
         // Google Fonts candidates (downloaded on demand) + platform fallbacks
@@ -129,7 +186,7 @@ mod tests {
 
     use super::{
         font_families_for_text, is_latin_only, normalize_translation_for_layout,
-        writing_mode_for_block,
+        shaping_direction_for_text, writing_mode_for_block,
     };
 
     #[test]
@@ -148,6 +205,8 @@ mod tests {
     fn font_family_selection_returns_candidates() {
         assert!(!font_families_for_text("hello").is_empty());
         assert!(!font_families_for_text("你好").is_empty());
+        assert!(!font_families_for_text("مرحبا").is_empty());
+        assert!(!font_families_for_text("สวัสดี").is_empty());
     }
 
     #[test]
@@ -174,5 +233,21 @@ mod tests {
         };
 
         assert_eq!(writing_mode_for_block(&block), WritingMode::Horizontal);
+    }
+
+    #[test]
+    fn arabic_text_uses_rtl_shaping() {
+        assert_eq!(
+            shaping_direction_for_text("مرحبا", WritingMode::Horizontal),
+            harfrust::Direction::RightToLeft
+        );
+    }
+
+    #[test]
+    fn latin_text_stays_ltr_shaping() {
+        assert_eq!(
+            shaping_direction_for_text("HELLO", WritingMode::Horizontal),
+            harfrust::Direction::LeftToRight
+        );
     }
 }
