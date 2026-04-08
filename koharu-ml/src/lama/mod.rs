@@ -21,15 +21,54 @@ use crate::{
     loading,
 };
 
-const HF_REPO: &str = "mayocream/lama-manga";
+// --- lama-manga (default) ---------------------------------------------------
+const LAMA_MANGA_REPO: &str = "mayocream/lama-manga";
+const LAMA_MANGA_FILE: &str = "lama-manga.safetensors";
 
 koharu_runtime::declare_hf_model_package!(
     id: "model:lama:weights",
-    repo: "mayocream/lama-manga",
-    file: "lama-manga.safetensors",
+    repo: LAMA_MANGA_REPO,
+    file: LAMA_MANGA_FILE,
     bootstrap: false,
     order: 130,
 );
+
+// --- big-lama ---------------------------------------------------------------
+const BIG_LAMA_REPO: &str = "smartywu/big-lama";
+const BIG_LAMA_FILE: &str = "big-lama.safetensors";
+
+koharu_runtime::declare_hf_model_package!(
+    id: "model:big-lama:weights",
+    repo: BIG_LAMA_REPO,
+    file: BIG_LAMA_FILE,
+    bootstrap: false,
+    order: 131,
+);
+
+/// Which LaMa inpainting weights to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LamaVariant {
+    /// Lightweight manga-tuned model (~fast, ~small).
+    LamaManga,
+    /// Full big-LaMa (~200 MB, better on complex textures).
+    BigLama,
+}
+
+impl LamaVariant {
+    fn hf_repo(self) -> &'static str {
+        match self {
+            Self::LamaManga => LAMA_MANGA_REPO,
+            Self::BigLama => BIG_LAMA_REPO,
+        }
+    }
+
+    fn filename(self) -> &'static str {
+        match self {
+            Self::LamaManga => LAMA_MANGA_FILE,
+            Self::BigLama => BIG_LAMA_FILE,
+        }
+    }
+}
 
 const BALLOON_CANNY_LOW: f32 = 70.0;
 const BALLOON_CANNY_HIGH: f32 = 140.0;
@@ -52,10 +91,18 @@ pub struct Lama {
 
 impl Lama {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
+        Self::load_variant(runtime, cpu, LamaVariant::LamaManga).await
+    }
+
+    pub async fn load_variant(
+        runtime: &RuntimeManager,
+        cpu: bool,
+        variant: LamaVariant,
+    ) -> Result<Self> {
         let device = device(cpu)?;
         let weights_path = runtime
             .downloads()
-            .huggingface_model(HF_REPO, "lama-manga.safetensors")
+            .huggingface_model(variant.hf_repo(), variant.filename())
             .await?;
         let model = loading::load_buffered_safetensors_path(&weights_path, &device, |vb| {
             model::Lama::load(&vb)
