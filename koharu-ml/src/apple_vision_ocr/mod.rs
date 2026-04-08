@@ -76,39 +76,54 @@ impl AppleVisionOcr {
             )
             .context("failed to encode image as PNG for Apple Vision OCR")?;
 
-        // Locate the helper binary. Search in order:
-        //  1. Next to the running executable (production .app bundle)
-        //  2. Inside the Tauri macOS bundle's MacOS/ dir (dev bundle path)
-        //  3. project target/debug/ — found by walking up from current_exe
-        //  4. Fall back to PATH (e.g. /usr/local/bin)
+        // Locate the helper binary.
+        //
+        // macOS GUI/Tauri apps launch with a stripped PATH of only
+        // /usr/bin:/bin:/usr/sbin:/sbin — /usr/local/bin and
+        // /opt/homebrew/bin are absent. So we must search absolute
+        // locations explicitly rather than relying on PATH.
         let helper_name = "apple-vision-ocr-helper";
-        let helper_path = std::env::current_exe().ok().and_then(|exe| {
-            let exe_dir = exe.parent()?;
 
-            // 1. Sibling of the running binary (covers both bundle & cargo run)
-            let sibling = exe_dir.join(helper_name);
-            if sibling.exists() {
-                return Some(sibling.into_os_string());
-            }
+        // Absolute locations checked in priority order.
+        // Covers: manual install (Intel /usr/local, Apple Silicon /opt/homebrew),
+        // MacPorts, and the two common Cargo output dirs for Tauri dev builds.
+        let absolute_candidates: &[&str] = &[
+            "/usr/local/bin/apple-vision-ocr-helper",
+            "/opt/homebrew/bin/apple-vision-ocr-helper",
+            "/opt/local/bin/apple-vision-ocr-helper",
+        ];
 
-            // 2. Tauri dev bundle: .../target/debug/bundle/macos/Koharu.app/Contents/MacOS/
-            //    Walk up to target/debug/ and look there.
-            let mut dir = exe_dir;
-            for _ in 0..6 {
-                let candidate = dir.join(helper_name);
-                if candidate.exists() {
-                    return Some(candidate.into_os_string());
+        let helper_path = absolute_candidates
+            .iter()
+            .map(std::path::Path::new)
+            .find(|p| p.exists())
+            .map(|p| p.as_os_str().to_owned())
+            .or_else(|| {
+                // Relative search: walk up from current_exe() to find the
+                // binary in target/debug/ or next to the .app bundle.
+                let exe = std::env::current_exe().ok()?;
+                let mut dir = exe.parent()?;
+                for _ in 0..8 {
+                    let candidate = dir.join(helper_name);
+                    if candidate.exists() {
+                        return Some(candidate.into_os_string());
+                    }
+                    dir = dir.parent()?;
                 }
-                dir = dir.parent()?;
-            }
-            None
-        })
-        .unwrap_or_else(|| std::ffi::OsString::from(helper_name));
+                None
+            })
+            .unwrap_or_else(|| std::ffi::OsString::from(helper_name));
 
         let mut cmd = Command::new(&helper_path);
         for lang in &self.languages {
             cmd.arg("--lang").arg(lang);
         }
+        // Provide a full PATH so the helper can find system frameworks,
+        // regardless of how restricted the app-process environment is.
+        cmd.env(
+            "PATH",
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        );
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()); // capture stderr for diagnostics
