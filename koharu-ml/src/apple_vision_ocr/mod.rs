@@ -76,8 +76,17 @@ impl AppleVisionOcr {
             )
             .context("failed to encode image as PNG for Apple Vision OCR")?;
 
-        // Build subprocess command
-        let mut cmd = Command::new("apple-vision-ocr-helper");
+        // Locate the helper binary: prefer a copy next to the running
+        // executable (works from app bundle and `target/debug/`), then
+        // fall back to PATH.
+        let helper_path = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("apple-vision-ocr-helper")))
+            .filter(|p| p.exists())
+            .map(|p| p.into_os_string())
+            .unwrap_or_else(|| std::ffi::OsString::from("apple-vision-ocr-helper"));
+
+        let mut cmd = Command::new(&helper_path);
         for lang in &self.languages {
             cmd.arg("--lang").arg(lang);
         }
@@ -87,7 +96,7 @@ impl AppleVisionOcr {
 
         let mut child = cmd
             .spawn()
-            .context("failed to spawn apple-vision-ocr-helper; ensure it is on PATH or in the same directory as koharu")?;
+            .context("failed to spawn apple-vision-ocr-helper; copy it next to the koharu executable or add it to PATH")?;
 
         // Write PNG to helper stdin
         if let Some(mut stdin) = child.stdin.take() {
