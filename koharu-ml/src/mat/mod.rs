@@ -77,10 +77,12 @@ impl Mat {
         let binary_mask = binarize_mask(mask);
         let (orig_w, orig_h) = image.dimensions();
 
-        // Scale to at most MAX_SIDE on the longest dimension
+        // Scale to at most MAX_SIDE on the longest dimension, then align to
+        // multiples of 4 (required by the patch-based synthesis).
+        // IMPORTANT: align BEFORE clamping to min so `& !3` can't produce 0.
         let scale = (MAX_SIDE as f32 / orig_w.max(orig_h) as f32).min(1.0);
-        let proc_w = ((orig_w as f32 * scale) as u32).max(1) & !3; // align to 4
-        let proc_h = ((orig_h as f32 * scale) as u32).max(1) & !3;
+        let proc_w = (((orig_w as f32 * scale) as u32) / 4 * 4).max(4);
+        let proc_h = (((orig_h as f32 * scale) as u32) / 4 * 4).max(4);
 
         let img_resized = resize(
             &image.to_rgb8(),

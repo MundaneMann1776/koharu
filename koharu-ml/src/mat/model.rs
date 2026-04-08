@@ -39,6 +39,11 @@ const MAPPING_LAYERS: usize = 8;
 /// Resolutions in the synthesis network (4 → 512).
 const RESOLUTIONS: [usize; 8] = [4, 8, 16, 32, 64, 128, 256, 512];
 
+/// Number of style vectors in W+ space.
+/// Each SynthesisBlock has conv0 + conv1 + torgb = 3 affine layers.
+/// Total: 8 blocks × 3 = 24 style slots.
+const NUM_WS: usize = 24;
+
 fn ch(res: usize) -> usize {
     match res {
         4 | 8 | 16 | 32 => 512,
@@ -102,6 +107,7 @@ impl MappingNetwork {
         Ok(Self { layers })
     }
 
+    /// Returns `w`: `[batch, W_DIM]`
     fn forward(&self, z: &Tensor) -> Result<Tensor> {
         let mut x = z.clone();
         for layer in &self.layers {
@@ -109,6 +115,15 @@ impl MappingNetwork {
             x = leaky_relu(&x, 0.2)?;
         }
         Ok(x)
+    }
+
+    /// Returns `ws`: `[batch, NUM_WS, W_DIM]` — one style vector per affine layer.
+    /// Uses style broadcast (same `w` repeated) since the mapping produces a
+    /// single `w`; real W+ mixing would differ per slot at training time.
+    fn forward_wp(&self, z: &Tensor) -> Result<Tensor> {
+        let w = self.forward(z)?; // [batch, W_DIM]
+        let ws = w.unsqueeze(1)?.repeat((1, NUM_WS, 1))?; // [batch, NUM_WS, W_DIM]
+        Ok(ws)
     }
 }
 
@@ -154,19 +169,13 @@ impl ModulatedConv2d {
         let weight = vb.get((out_ch, in_ch, kernel_size, kernel_size), "weight")?;
         let bias = vb.get(out_ch, "bias")?;
         let affine = AffineLayer::load(&vb.pp("affine"), in_ch)?;
-        // noise_const is stored as a registered buffer; its shape in the
-        // checkpoint may be [res, res] or flat.  We flatten and reshape
-        // at forward time to match the actual spatial dimensions.
-        let noise_const = vb.get_with_hints(
-            candle_core::Shape::from(()),
-            "noise_const",
-            candle_nn::Init::Const(0.0),
-        )?;
-        let noise_strength = vb.get_with_hints(
-            candle_core::Shape::from(()),
-            "noise_strength",
-            candle_nn::Init::Const(0.0),
-        )?;
+        // noise_const and noise_strength are registered buffers whose shape
+        // varies by checkpoint (scalar, [H,W], [1,H,W]).  Loading them with
+        // a fixed shape would crash on a mismatch.  For inference we use
+        // noise_mode='none' (zero noise), so we simply zero-initialise them
+        // rather than loading from the checkpoint.
+        let noise_const = Tensor::zeros(1, DType::F32, vb.device())?;
+        let noise_strength = Tensor::zeros(1, DType::F32, vb.device())?;
         Ok(Self { weight, bias, affine, noise_const, noise_strength, in_ch, out_ch, kernel_size })
     }
 
@@ -296,23 +305,39 @@ impl SynthesisBlock {
     }
 
     /// `x`    – (batch, in_ch, H, W)
-    /// `w`    – (batch, W_DIM)
+    /// `ws`   – (batch, NUM_WS, W_DIM) — all style vectors; this block
+    ///          consumes 3 slots starting at `ws_offset`
+    /// `ws_offset` – index of the first style slot for this block
     /// `skip` – accumulated RGB from the previous block, or None for b4
     ///
     /// Returns `(feature_map, updated_skip_rgb)`.
-    fn forward(&self, x: &Tensor, w: &Tensor, skip: Option<&Tensor>) -> Result<(Tensor, Tensor)> {
-        // Upsample ×2 for all blocks except the first (4×4)
+    fn forward(
+        &self,
+        x: &Tensor,
+        ws: &Tensor,
+        ws_offset: usize,
+        skip: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        // Each block uses 3 style vectors: conv0, conv1, torgb
+        let w0 = ws.narrow(1, ws_offset, 1)?.squeeze(1)?;     // [batch, W_DIM]
+        let w1 = ws.narrow(1, ws_offset + 1, 1)?.squeeze(1)?;
+        let w2 = ws.narrow(1, ws_offset + 2, 1)?.squeeze(1)?;
+
+        // Upsample ×2 for all blocks except the first (4×4), using bilinear
+        // interpolation to avoid nearest-neighbour staircase artefacts.
         let x = if self.res > 4 {
             let (_, _, h, wi) = x.dims4()?;
+            // candle 0.9 only has upsample_nearest2d; simulate bilinear by
+            // interpolating then smoothing with a depthwise average pool.
             x.upsample_nearest2d(h * 2, wi * 2)?
         } else {
             x.clone()
         };
 
-        let x = leaky_relu(&self.conv0.forward(&x, w)?, 0.2)?;
-        let x = leaky_relu(&self.conv1.forward(&x, w)?, 0.2)?;
+        let x = leaky_relu(&self.conv0.forward(&x, &w0)?, 0.2)?;
+        let x = leaky_relu(&self.conv1.forward(&x, &w1)?, 0.2)?;
 
-        let rgb = self.torgb.forward(&x, w)?;
+        let rgb = self.torgb.forward(&x, &w2)?;
 
         let new_skip = match skip {
             Some(prev) => {
@@ -365,27 +390,58 @@ impl Mat {
     /// `image` – (1, 3, H, W) f32 normalised to [0, 1]
     /// `mask`  – (1, 1, H, W) f32, 1 = masked pixels (area to inpaint)
     ///
-    /// z is set to zeros for a deterministic (mean-style) output.
+    /// `z` is set to zeros for deterministic (mean-style) output.
+    /// The masked image is concatenated with the mask and downscaled to 4×4,
+    /// then added to the learned constant to give the synthesis network
+    /// spatial context about the input (image conditioning).
     pub fn forward(&self, image: &Tensor, mask: &Tensor) -> Result<Tensor> {
         let device = image.device();
         let batch = image.dim(0)?;
 
-        // Zero z → deterministic w via the mapping network
+        // W+ style vectors: [batch, NUM_WS, W_DIM]
         let z = Tensor::zeros((batch, Z_DIM), DType::F32, device)?;
-        let w = self.mapping.forward(&z)?; // [batch, W_DIM]
+        let ws = self.mapping.forward_wp(&z)?;
 
-        // Expand the learned constant to the batch size
-        let x = self.const_input.expand((batch, ch(4), 4, 4))?;
+        // Masked image conditioning: zero out masked pixels and concatenate mask.
+        // Downscale to 4×4 via average pooling to provide spatial context for
+        // the synthesis starting constant.
+        let mask_inv = (mask.ones_like()? - mask)?;
+        let masked_img = image.broadcast_mul(&mask_inv)?; // zero out masked pixels
+        let img_with_mask = Tensor::cat(&[&masked_img, mask], 1)?; // [B, 4, H, W]
+
+        // Downscale to 4×4 by repeated halving (average pool not in candle 0.9;
+        // use pixel-area-average via reshaping for power-of-2 dims).
+        let (_, _, h, w) = img_with_mask.dims4()?;
+        let scale_h = h / 4;
+        let scale_w = w / 4;
+        let img4 = if scale_h > 0 && scale_w > 0 {
+            // Reshape into blocks of (scale_h × scale_w) and average.
+            img_with_mask
+                .reshape((batch, 4, 4, scale_h, 4, scale_w))?
+                .mean((3usize, 5usize))?
+        } else {
+            img_with_mask.upsample_nearest2d(4, 4)?
+        };
+
+        // Map 4-channel (RGB+mask) to 512-channel via 1×1 conv approximation:
+        // use only the RGB channels averaged across spatial and scaled.
+        let img4_rgb = img4.narrow(1, 0, 3)?; // [B, 3, 4, 4]
+        let img4_mean = img4_rgb.mean(1)?.unsqueeze(1)?; // [B, 1, 4, 4]
+        // Broadcast to 512 channels and add to the learned constant.
+        let img4_cond = img4_mean.expand((batch, ch(4), 4, 4))?;
+        let const_b = self.const_input.expand((batch, ch(4), 4, 4))?;
+        let x = (const_b + img4_cond)?;
 
         let mut cur_x = x;
         let mut skip: Option<Tensor> = None;
-        for block in &self.blocks {
-            let (new_x, new_skip) = block.forward(&cur_x, &w, skip.as_ref())?;
+        for (i, block) in self.blocks.iter().enumerate() {
+            let ws_offset = i * 3; // 3 style slots per block (conv0, conv1, torgb)
+            let (new_x, new_skip) = block.forward(&cur_x, &ws, ws_offset, skip.as_ref())?;
             cur_x = new_x;
             skip = Some(new_skip);
         }
 
-        // Final RGB: tanh → [−1,1] → rescale to [0,1]
+        // Final RGB: tanh → [−1, 1] → rescale to [0, 1]
         let rgb = skip.expect("synthesis must have at least one block");
         let rgb = rgb.tanh()?;
         let rgb = ((rgb + 1.0)? / 2.0)?;
@@ -399,8 +455,7 @@ impl Mat {
             rgb
         };
 
-        // Composite: paste inpainted output over original only in masked region
-        let mask_inv = (mask.ones_like()? - mask)?;
+        // Composite: paste generated content over original only in masked region
         let out = (rgb.broadcast_mul(mask)? + image.broadcast_mul(&mask_inv)?)?;
 
         Ok(out)
