@@ -954,6 +954,63 @@ inventory::submit! {
     }
 }
 
+// --- Apple Vision OCR --------------------------------------------------------
+
+struct AppleVisionOcrEngine(koharu_ml::apple_vision_ocr::AppleVisionOcr);
+
+#[async_trait]
+impl Engine for AppleVisionOcrEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        if doc.text_blocks.is_empty() {
+            return Ok(Patch::none());
+        }
+        let (source, regions) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let regions: Vec<_> = doc
+                .text_blocks
+                .iter()
+                .map(|b| koharu_ml::comic_text_detector::crop_text_block_bbox(&source, b))
+                .collect();
+            (source, regions)
+        };
+        let texts = {
+            let _s = tracing::info_span!("inference", blocks = regions.len()).entered();
+            regions
+                .iter()
+                .map(|region| self.0.recognize(region))
+                .collect::<Result<Vec<_>>>()?
+        };
+        let mut blocks = doc.text_blocks.clone();
+        for (block, text) in blocks.iter_mut().zip(texts) {
+            block.text = Some(text);
+        }
+        let _ = source;
+        Ok(Patch::apply(|doc| doc.text_blocks = blocks))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "apple-vision-ocr",
+        name: "Apple Vision OCR",
+        needs: &[Artifact::TextBlocks],
+        produces: &[Artifact::OcrText],
+        load: |_res| Box::pin(async move {
+            if !koharu_ml::apple_vision_ocr::AppleVisionOcr::available() {
+                anyhow::bail!("Apple Vision OCR is only available on macOS");
+            }
+            let ocr = koharu_ml::apple_vision_ocr::AppleVisionOcr::new(vec![])?;
+            Ok(Box::new(AppleVisionOcrEngine(ocr)) as Box<dyn Engine>)
+        }),
+    }
+}
+
 // --- Manga OCR ---------------------------------------------------------------
 
 struct MangaOcrEngine(koharu_ml::manga_ocr::MangaOcr);
