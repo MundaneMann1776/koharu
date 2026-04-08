@@ -22,6 +22,8 @@ export const selectors = {
     brushDisplayCanvas: 'workspace-brush-display-canvas',
     renderedImage: 'workspace-rendered-image',
     inpaintedImage: 'workspace-inpainted-image',
+    textBlock: (index: number) => `workspace-text-block-${index}`,
+    textBlockSprite: (index: number) => `workspace-text-block-sprite-${index}`,
     annotations: 'workspace-annotations',
   },
   zoom: {
