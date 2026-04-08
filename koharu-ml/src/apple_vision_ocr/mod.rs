@@ -76,15 +76,34 @@ impl AppleVisionOcr {
             )
             .context("failed to encode image as PNG for Apple Vision OCR")?;
 
-        // Locate the helper binary: prefer a copy next to the running
-        // executable (works from app bundle and `target/debug/`), then
-        // fall back to PATH.
-        let helper_path = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join("apple-vision-ocr-helper")))
-            .filter(|p| p.exists())
-            .map(|p| p.into_os_string())
-            .unwrap_or_else(|| std::ffi::OsString::from("apple-vision-ocr-helper"));
+        // Locate the helper binary. Search in order:
+        //  1. Next to the running executable (production .app bundle)
+        //  2. Inside the Tauri macOS bundle's MacOS/ dir (dev bundle path)
+        //  3. project target/debug/ — found by walking up from current_exe
+        //  4. Fall back to PATH (e.g. /usr/local/bin)
+        let helper_name = "apple-vision-ocr-helper";
+        let helper_path = std::env::current_exe().ok().and_then(|exe| {
+            let exe_dir = exe.parent()?;
+
+            // 1. Sibling of the running binary (covers both bundle & cargo run)
+            let sibling = exe_dir.join(helper_name);
+            if sibling.exists() {
+                return Some(sibling.into_os_string());
+            }
+
+            // 2. Tauri dev bundle: .../target/debug/bundle/macos/Koharu.app/Contents/MacOS/
+            //    Walk up to target/debug/ and look there.
+            let mut dir = exe_dir;
+            for _ in 0..6 {
+                let candidate = dir.join(helper_name);
+                if candidate.exists() {
+                    return Some(candidate.into_os_string());
+                }
+                dir = dir.parent()?;
+            }
+            None
+        })
+        .unwrap_or_else(|| std::ffi::OsString::from(helper_name));
 
         let mut cmd = Command::new(&helper_path);
         for lang in &self.languages {
