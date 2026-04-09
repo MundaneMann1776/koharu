@@ -356,14 +356,7 @@ impl Renderer {
             self.select_font(&style)?
         };
         let block_effect = style.effect.unwrap_or(effect);
-        // Keep automatic rendering color stable: use explicit style color when
-        // present, otherwise default to black. Font-detector color regression is
-        // useful as metadata but can produce unstable tinting across pages.
-        let color = text_block
-            .style
-            .as_ref()
-            .map(|style| style.color)
-            .unwrap_or([0, 0, 0, 255]);
+        let color = resolve_text_color(text_block);
         let writing_mode = writing_mode_for_block(&layout_source_block);
         let english_horizontal_layout =
             writing_mode == WritingMode::Horizontal && is_latin_only(&normalized_translation);
@@ -490,6 +483,35 @@ impl Renderer {
 
 fn default_stroke_width(font_size: f32) -> f32 {
     (font_size * 0.10).clamp(1.2, 8.0)
+}
+
+fn legacy_auto_style_color(block: &TextBlock) -> Option<[u8; 4]> {
+    let style = block.style.as_ref()?;
+    let pred = block.font_prediction.as_ref()?;
+    let predicted = [pred.text_color[0], pred.text_color[1], pred.text_color[2], 255];
+    if style.color == predicted
+        && style.stroke.is_none()
+        && style.font_size.is_none()
+        && style.effect.is_none()
+        && style.text_align.is_none()
+        && style.font_families.is_empty()
+    {
+        Some(predicted)
+    } else {
+        None
+    }
+}
+
+fn resolve_text_color(block: &TextBlock) -> [u8; 4] {
+    let Some(style) = block.style.as_ref() else {
+        return [0, 0, 0, 255];
+    };
+
+    if legacy_auto_style_color(block).is_some() {
+        return [0, 0, 0, 255];
+    }
+
+    style.color
 }
 
 fn apply_default_font_families(font_families: &mut Vec<String>, text: &str) {
@@ -737,9 +759,9 @@ fn find_best_bubble(block: &TextBlock, bubbles: &[koharu_core::BubbleRegion]) ->
 mod tests {
     use super::{
         align_layout_horizontally, apply_default_font_families, center_layout_vertically,
-        resolve_stroke_style,
+        legacy_auto_style_color, resolve_stroke_style, resolve_text_color,
     };
-    use koharu_core::{FontPrediction, TextAlign, TextBlock, TextStrokeStyle};
+    use koharu_core::{FontPrediction, TextAlign, TextBlock, TextStrokeStyle, TextStyle};
     use koharu_renderer::layout::{LayoutLine, LayoutRun, WritingMode};
 
     #[test]
@@ -926,11 +948,51 @@ mod tests {
 
     #[test]
     fn auto_text_color_defaults_to_black_without_explicit_style() {
-        let color = TextBlock::default()
-            .style
-            .as_ref()
-            .map(|style| style.color)
-            .unwrap_or([0, 0, 0, 255]);
+        let color = resolve_text_color(&TextBlock::default());
         assert_eq!(color, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn legacy_predicted_auto_color_is_ignored() {
+        let block = TextBlock {
+            style: Some(TextStyle {
+                font_families: Vec::new(),
+                font_size: None,
+                color: [20, 200, 180, 255],
+                effect: None,
+                stroke: None,
+                text_align: None,
+            }),
+            font_prediction: Some(FontPrediction {
+                text_color: [20, 200, 180],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(legacy_auto_style_color(&block), Some([20, 200, 180, 255]));
+        assert_eq!(resolve_text_color(&block), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn explicit_style_color_is_preserved() {
+        let block = TextBlock {
+            style: Some(TextStyle {
+                font_families: vec!["Some Font".to_string()],
+                font_size: None,
+                color: [20, 200, 180, 255],
+                effect: None,
+                stroke: None,
+                text_align: None,
+            }),
+            font_prediction: Some(FontPrediction {
+                text_color: [20, 200, 180],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(legacy_auto_style_color(&block), None);
+        assert_eq!(resolve_text_color(&block), [20, 200, 180, 255]);
     }
 }
