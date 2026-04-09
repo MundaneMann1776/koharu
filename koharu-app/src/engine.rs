@@ -1347,6 +1347,53 @@ inventory::submit! {
     }
 }
 
+// --- MI-GAN Inpainting (via vision.cpp subprocess) -------------------------
+
+struct MiGanInpaintEngine(koharu_ml::migan::MiGan);
+
+#[async_trait]
+impl Engine for MiGanInpaintEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        let seg_ref = doc
+            .segment
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no segment mask"))?;
+        let (source, segment) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let segment: SerializableDynamicImage = res.storage.images.load(seg_ref)?.into();
+            (source, segment)
+        };
+        let result = {
+            let _s = tracing::info_span!("inference").entered();
+            self.0.inference(&source, &segment)?
+        };
+        let blob = {
+            let _s = tracing::info_span!("save").entered();
+            res.storage.images.store_webp(&result)?
+        };
+        Ok(Patch::apply(|doc| doc.inpainted = Some(blob)))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "mi-gan",
+        name: "MI-GAN (14 MB, CPU)",
+        needs: &[Artifact::Segment],
+        produces: &[Artifact::Inpainted],
+        load: |res| Box::pin(async move {
+            let m = koharu_ml::migan::MiGan::load(&res.runtime).await?;
+            Ok(Box::new(MiGanInpaintEngine(m)) as Box<dyn Engine>)
+        }),
+    }
+}
+
 // --- MAT Inpainting -------------------------------------------------------
 
 struct MatInpaintEngine(koharu_ml::mat::Mat);

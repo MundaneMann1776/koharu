@@ -4,6 +4,7 @@ mod inpainting;
 pub mod apple_vision_ocr;
 pub mod aot_inpainting;
 pub mod aot_inpainting_gan;
+pub mod migan;
 pub mod comic_text_bubble_detector;
 pub mod comic_text_detector;
 pub mod font_detector;
