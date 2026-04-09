@@ -16,10 +16,10 @@ use crate::{
 
 use self::model::Mat as MatModel;
 
-const HF_REPO: &str = "Sanster/MAT";
-// The upstream checkpoint `Places_512_FullData_G.pt` is a PyTorch pickle.
-// candle's VarBuilder::from_pth loads it directly.
-const WEIGHTS_FILE: &str = "Places_512_FullData_G.pt";
+// Acly/MAT is a community conversion of the original MAT Places-512 checkpoint
+// to safetensors fp16 format, verified to exist on HuggingFace.
+const HF_REPO: &str = "Acly/MAT";
+const WEIGHTS_FILE: &str = "MAT_Places512_G_fp16.safetensors";
 
 /// Longest side to which the input image is scaled before MAT inference.
 /// MAT-512 was trained at 512×512.
@@ -46,15 +46,22 @@ impl Mat {
             .huggingface_model(HF_REPO, WEIGHTS_FILE)
             .await?;
 
-        // Places_512_FullData_G.pt is a raw PyTorch pickle (state_dict).
-        // Weight keys follow the pattern: mapping.fc{0..7}.* and synthesis.b{res}.*
-        let vb = candle_nn::VarBuilder::from_pth(&weights_path, DType::F32, &device)
-            .context("failed to open Places_512_FullData_G.pt")?;
+        // MAT_Places512_G_fp16.safetensors is stored in fp16.
+        // Load as fp16 first then the VarBuilder will cast tensors to F32
+        // when retrieved (candle upcasts automatically on get()).
+        let vb = unsafe {
+            candle_nn::VarBuilder::from_mmaped_safetensors(
+                &[weights_path.as_path()],
+                DType::F32,
+                &device,
+            )
+        }
+        .context("failed to open MAT_Places512_G_fp16.safetensors")?;
 
         let model = MatModel::load(&vb)
             .context(
-                "failed to load MAT weights — verify weight key layout in \
-                 koharu-ml/src/mat/model.rs matches the checkpoint",
+                "failed to load MAT weights — weight key names in checkpoint \
+                 did not match expected layout; see koharu-ml/src/mat/model.rs",
             )?;
 
         Ok(Self { model, device })
