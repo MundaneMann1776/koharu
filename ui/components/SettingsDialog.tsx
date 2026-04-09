@@ -87,6 +87,22 @@ type SettingsDialogProps = {
 const DEFAULT_HTTP_CONNECT_TIMEOUT = 20
 const DEFAULT_HTTP_READ_TIMEOUT = 300
 const DEFAULT_HTTP_MAX_RETRIES = 3
+const EXPERIMENTAL_ENGINE_IDS = new Set(['glm-ocr', 'qwen3-vl'])
+const MACOS_ONLY_ENGINE_IDS = new Set(['apple-vision-ocr'])
+
+function isLikelyMacOS(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+}
+
+function engineLabel(
+  engine: Pick<import('@/lib/api/schemas').EngineCatalogEntry, 'id' | 'name'>,
+) {
+  const flags: string[] = []
+  if (EXPERIMENTAL_ENGINE_IDS.has(engine.id)) flags.push('experimental')
+  if (MACOS_ONLY_ENGINE_IDS.has(engine.id)) flags.push('macOS only')
+  return flags.length ? `${engine.name} (${flags.join(', ')})` : engine.name
+}
 
 export function SettingsDialog({
   open,
@@ -467,6 +483,7 @@ function EnginesPane({
   onChange: (pipeline: import('@/lib/api/schemas').PipelineConfig) => void
 }) {
   const { t } = useTranslation()
+  const isMacOS = isLikelyMacOS()
 
   const sections = [
     {
@@ -512,26 +529,40 @@ function EnginesPane({
       <p className='text-muted-foreground text-xs'>
         {t('settings.enginesDescription')}
       </p>
-      {sections.map(({ label, key, engines }) => (
-        <div key={key} className='space-y-1.5'>
-          <Label className='text-xs'>{label}</Label>
-          <Select
-            value={pipeline[key] ?? engines[0]?.id ?? ''}
-            onValueChange={(v) => onChange({ ...pipeline, [key]: v })}
-          >
-            <SelectTrigger className='w-full'>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {engines.map((e) => (
-                <SelectItem key={e.id} value={e.id}>
-                  {e.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      ))}
+      {sections.map(({ label, key, engines }) => {
+        const selectedEngine = pipeline[key]
+        return (
+          <div key={key} className='space-y-1.5'>
+            <Label className='text-xs'>{label}</Label>
+            <Select
+              value={pipeline[key] ?? engines[0]?.id ?? ''}
+              onValueChange={(v) => onChange({ ...pipeline, [key]: v })}
+            >
+              <SelectTrigger className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {engines.map((e) => (
+                  <SelectItem
+                    key={e.id}
+                    value={e.id}
+                    disabled={MACOS_ONLY_ENGINE_IDS.has(e.id) && !isMacOS}
+                  >
+                    {engineLabel(e)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedEngine &&
+            MACOS_ONLY_ENGINE_IDS.has(selectedEngine) &&
+            !isMacOS ? (
+              <p className='text-muted-foreground text-xs'>
+                Apple Vision OCR requires macOS. Please pick another OCR engine.
+              </p>
+            ) : null}
+          </div>
+        )
+      })}
     </div>
   )
 }
