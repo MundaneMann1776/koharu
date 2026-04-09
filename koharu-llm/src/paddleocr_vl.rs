@@ -473,10 +473,19 @@ async fn download_model_files(
     ocr_backend: VisionOcrBackend,
 ) -> Result<ModelFiles> {
     let artifacts = runtime.downloads();
+    let repo = ocr_backend.hf_repo();
+    let model_file = ocr_backend.model_filename();
+    let mmproj_file = ocr_backend.mmproj_filename();
+    let backend_name = ocr_backend.display_name();
     let (model, mmproj) = tokio::try_join!(
-        artifacts.huggingface_model(ocr_backend.hf_repo(), ocr_backend.model_filename()),
-        artifacts.huggingface_model(ocr_backend.hf_repo(), ocr_backend.mmproj_filename()),
-    )?;
+        artifacts.huggingface_model(repo, model_file),
+        artifacts.huggingface_model(repo, mmproj_file),
+    )
+    .with_context(|| {
+        format!(
+            "failed to download {backend_name} OCR assets (repo: `{repo}`, model: `{model_file}`, mmproj: `{mmproj_file}`)"
+        )
+    })?;
 
     Ok(ModelFiles { model, mmproj })
 }
@@ -520,18 +529,9 @@ fn resolve_local_model_files(dir: &Path, ocr_backend: VisionOcrBackend) -> Resul
     }
 
     Ok(ModelFiles {
-        model: model.with_context(|| {
-            format!(
-                "missing a non-mmproj GGUF in `{}`",
-                dir.display()
-            )
-        })?,
-        mmproj: mmproj.with_context(|| {
-            format!(
-                "missing a mmproj GGUF in `{}`",
-                dir.display()
-            )
-        })?,
+        model: model
+            .with_context(|| format!("missing a non-mmproj GGUF in `{}`", dir.display()))?,
+        mmproj: mmproj.with_context(|| format!("missing a mmproj GGUF in `{}`", dir.display()))?,
     })
 }
 

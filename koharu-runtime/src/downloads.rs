@@ -90,7 +90,7 @@ impl Downloads {
             Ok(path) => Ok(path),
             Err(error) => {
                 let error = anyhow::Error::new(error).context(format!(
-                    "failed to download HF model file `{repo}/{filename}`"
+                    "failed to download HF model file `{repo}/{filename}`; verify network access to Hugging Face and write permissions for the runtime cache"
                 ));
                 progress.fail(&error).await;
                 Err(error)
