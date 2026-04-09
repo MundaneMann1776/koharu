@@ -489,13 +489,7 @@ fn legacy_auto_style_color(block: &TextBlock) -> Option<[u8; 4]> {
     let style = block.style.as_ref()?;
     let pred = block.font_prediction.as_ref()?;
     let predicted = [pred.text_color[0], pred.text_color[1], pred.text_color[2], 255];
-    if style.color == predicted
-        && style.stroke.is_none()
-        && style.font_size.is_none()
-        && style.effect.is_none()
-        && style.text_align.is_none()
-        && style.font_families.is_empty()
-    {
+    if style.color == predicted {
         Some(predicted)
     } else {
         None
@@ -980,7 +974,7 @@ mod tests {
             style: Some(TextStyle {
                 font_families: vec!["Some Font".to_string()],
                 font_size: None,
-                color: [20, 200, 180, 255],
+                color: [200, 30, 10, 255],
                 effect: None,
                 stroke: None,
                 text_align: None,
@@ -993,6 +987,27 @@ mod tests {
         };
 
         assert_eq!(legacy_auto_style_color(&block), None);
-        assert_eq!(resolve_text_color(&block), [20, 200, 180, 255]);
+        assert_eq!(resolve_text_color(&block), [200, 30, 10, 255]);
+    }
+
+    #[test]
+    fn matching_prediction_color_is_ignored_even_with_other_style_fields() {
+        let block = TextBlock {
+            style: Some(TextStyle {
+                font_families: vec!["Some Font".to_string()],
+                font_size: Some(22.0),
+                color: [20, 200, 180, 255],
+                effect: None,
+                stroke: None,
+                text_align: None,
+            }),
+            font_prediction: Some(FontPrediction {
+                text_color: [20, 200, 180],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(resolve_text_color(&block), [0, 0, 0, 255]);
     }
 }
