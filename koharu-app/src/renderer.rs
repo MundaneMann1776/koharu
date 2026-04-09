@@ -356,20 +356,13 @@ impl Renderer {
             self.select_font(&style)?
         };
         let block_effect = style.effect.unwrap_or(effect);
+        // Keep automatic rendering color stable: use explicit style color when
+        // present, otherwise default to black. Font-detector color regression is
+        // useful as metadata but can produce unstable tinting across pages.
         let color = text_block
             .style
             .as_ref()
             .map(|style| style.color)
-            .or_else(|| {
-                text_block.font_prediction.as_ref().map(|pred| {
-                    [
-                        pred.text_color[0],
-                        pred.text_color[1],
-                        pred.text_color[2],
-                        255,
-                    ]
-                })
-            })
             .unwrap_or([0, 0, 0, 255]);
         let writing_mode = writing_mode_for_block(&layout_source_block);
         let english_horizontal_layout =
@@ -929,5 +922,15 @@ mod tests {
 
         assert_eq!(stroke.color, [0, 0, 0, 255]);
         assert_eq!(stroke.width_px, 2.0);
+    }
+
+    #[test]
+    fn auto_text_color_defaults_to_black_without_explicit_style() {
+        let color = TextBlock::default()
+            .style
+            .as_ref()
+            .map(|style| style.color)
+            .unwrap_or([0, 0, 0, 255]);
+        assert_eq!(color, [0, 0, 0, 255]);
     }
 }
