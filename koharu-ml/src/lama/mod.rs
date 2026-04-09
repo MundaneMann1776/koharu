@@ -47,13 +47,32 @@ koharu_runtime::declare_hf_model_package!(
     order: 131,
 );
 
+// --- anime-manga-inpainting -------------------------------------------------
+// Big-LaMa fine-tuned on 300k manga + anime images by dreMaz.
+// Same FFC-LaMa architecture — loads with the existing model::Lama::load().
+// The .ckpt is a PyTorch Lightning checkpoint; same prefix-fallback strategy
+// used for big-lama.pt applies here.
+const ANIME_MANGA_REPO: &str = "dreMaz/AnimeMangaInpainting";
+const ANIME_MANGA_FILE: &str = "lama_large_512px.ckpt";
+
+koharu_runtime::declare_hf_model_package!(
+    id: "model:anime-manga-inpaint:weights",
+    repo: ANIME_MANGA_REPO,
+    file: ANIME_MANGA_FILE,
+    bootstrap: false,
+    order: 132,
+);
+
 /// Which LaMa inpainting weights to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LamaVariant {
-    /// Lightweight manga-tuned model (~fast, ~small).
+    /// Lightweight manga-tuned model (fast, small).
     LamaManga,
     /// Full big-LaMa (~200 MB, better on complex textures).
     BigLama,
+    /// Big-LaMa fine-tuned on 300k manga/anime images (~205 MB).
+    /// Best choice for manga and webtoon content.
+    AnimeManga,
 }
 
 impl LamaVariant {
@@ -61,6 +80,7 @@ impl LamaVariant {
         match self {
             Self::LamaManga => LAMA_MANGA_REPO,
             Self::BigLama => BIG_LAMA_REPO,
+            Self::AnimeManga => ANIME_MANGA_REPO,
         }
     }
 
@@ -68,8 +88,28 @@ impl LamaVariant {
         match self {
             Self::LamaManga => LAMA_MANGA_FILE,
             Self::BigLama => BIG_LAMA_FILE,
+            Self::AnimeManga => ANIME_MANGA_FILE,
         }
     }
+}
+
+/// Try three common PyTorch Lightning key-prefix layouts for LaMa checkpoints
+/// and return the first that loads successfully.
+fn load_lama_from_pth(vb: candle_nn::VarBuilder) -> Result<model::Lama> {
+    let prefixes: &[&[&str]] = &[
+        &["state_dict", "generator"],
+        &["generator"],
+        &[],
+    ];
+    let mut last_err = anyhow::anyhow!("no matching key prefix found in checkpoint");
+    for prefix in prefixes {
+        let scoped = prefix.iter().fold(vb.clone(), |v, p: &&str| v.pp(*p));
+        match model::Lama::load(&scoped) {
+            Ok(m) => return Ok(m),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
 
 const BALLOON_CANNY_LOW: f32 = 70.0;
@@ -113,39 +153,22 @@ impl Lama {
                     model::Lama::load(&vb)
                 })?
             }
-            LamaVariant::BigLama => {
-                // big-lama.pt is a PyTorch Lightning checkpoint.
-                // candle's from_pth reads the pickle and gives us a flat
-                // tensor map.  Lightning checkpoints wrap everything under
-                // `state_dict`, and the LaMa trainer further nests the
-                // generator under `generator`.  Try both layouts:
-                //   • state_dict.generator.model.*  (Lightning full ckpt)
+            LamaVariant::BigLama | LamaVariant::AnimeManga => {
+                // Both big-lama.pt and lama_large_512px.ckpt are PyTorch Lightning
+                // checkpoints. Load via from_pth and try three key-prefix layouts:
+                //   • state_dict.generator.model.*  (Lightning full checkpoint)
                 //   • generator.model.*             (plain state_dict save)
-                //   • model.*                       (generator-only save)
+                //   • model.*                       (generator-only export)
+                let filename = variant.filename();
                 let vb = candle_nn::VarBuilder::from_pth(
                     &weights_path,
                     candle_core::DType::F32,
                     &device,
                 )
-                .context("failed to open big-lama.pt")?;
+                .with_context(|| format!("failed to open {filename}"))?;
 
-                // Try each prefix in order; use the first that loads.
-                let prefixes: &[&[&str]] = &[
-                    &["state_dict", "generator"],
-                    &["generator"],
-                    &[],
-                ];
-                let mut last_err = anyhow::anyhow!("no prefix matched");
-                let mut loaded = None;
-                for prefix in prefixes {
-                    let scoped = prefix.iter().fold(vb.clone(), |v, p: &&str| v.pp(*p));
-                    match model::Lama::load(&scoped) {
-                        Ok(m) => { loaded = Some(m); break; }
-                        Err(e) => { last_err = e; }
-                    }
-                }
-                loaded.ok_or(last_err)
-                    .context("big-lama.pt: could not find generator weights under any expected key prefix")?
+                load_lama_from_pth(vb)
+                    .with_context(|| format!("{filename}: could not find generator weights under any expected key prefix"))?
             }
         };
 
