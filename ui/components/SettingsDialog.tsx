@@ -16,6 +16,7 @@ import {
   HardDriveIcon,
   InfoIcon,
   CpuIcon,
+  ZapIcon,
 } from 'lucide-react'
 import {
   Dialog,
@@ -86,6 +87,22 @@ type SettingsDialogProps = {
 const DEFAULT_HTTP_CONNECT_TIMEOUT = 20
 const DEFAULT_HTTP_READ_TIMEOUT = 300
 const DEFAULT_HTTP_MAX_RETRIES = 3
+const EXPERIMENTAL_ENGINE_IDS = new Set(['glm-ocr', 'qwen3-vl'])
+const MACOS_ONLY_ENGINE_IDS = new Set(['apple-vision-ocr'])
+
+function isLikelyMacOS(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+}
+
+function engineLabel(
+  engine: Pick<import('@/lib/api/schemas').EngineCatalogEntry, 'id' | 'name'>,
+) {
+  const flags: string[] = []
+  if (EXPERIMENTAL_ENGINE_IDS.has(engine.id)) flags.push('experimental')
+  if (MACOS_ONLY_ENGINE_IDS.has(engine.id)) flags.push('macOS only')
+  return flags.length ? `${engine.name} (${flags.join(', ')})` : engine.name
+}
 
 export function SettingsDialog({
   open,
@@ -303,6 +320,16 @@ export function SettingsDialog({
                   catalogs={providerCatalogs}
                   config={appConfig}
                   drafts={apiKeyDrafts}
+                  currentTranslator={appConfig?.pipeline?.translator}
+                  onSetTranslator={(id) => {
+                    if (!appConfig) return
+                    const next = {
+                      ...appConfig,
+                      pipeline: { ...appConfig.pipeline, translator: id },
+                    }
+                    setAppConfig(next)
+                    void persistConfig(next)
+                  }}
                   onBaseUrlChange={(id, v) =>
                     upsertProvider(id, (p) => ({
                       ...p,
@@ -456,6 +483,7 @@ function EnginesPane({
   onChange: (pipeline: import('@/lib/api/schemas').PipelineConfig) => void
 }) {
   const { t } = useTranslation()
+  const isMacOS = isLikelyMacOS()
 
   const sections = [
     {
@@ -501,26 +529,40 @@ function EnginesPane({
       <p className='text-muted-foreground text-xs'>
         {t('settings.enginesDescription')}
       </p>
-      {sections.map(({ label, key, engines }) => (
-        <div key={key} className='space-y-1.5'>
-          <Label className='text-xs'>{label}</Label>
-          <Select
-            value={pipeline[key] ?? engines[0]?.id ?? ''}
-            onValueChange={(v) => onChange({ ...pipeline, [key]: v })}
-          >
-            <SelectTrigger className='w-full'>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {engines.map((e) => (
-                <SelectItem key={e.id} value={e.id}>
-                  {e.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      ))}
+      {sections.map(({ label, key, engines }) => {
+        const selectedEngine = pipeline[key]
+        return (
+          <div key={key} className='space-y-1.5'>
+            <Label className='text-xs'>{label}</Label>
+            <Select
+              value={pipeline[key] ?? engines[0]?.id ?? ''}
+              onValueChange={(v) => onChange({ ...pipeline, [key]: v })}
+            >
+              <SelectTrigger className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {engines.map((e) => (
+                  <SelectItem
+                    key={e.id}
+                    value={e.id}
+                    disabled={MACOS_ONLY_ENGINE_IDS.has(e.id) && !isMacOS}
+                  >
+                    {engineLabel(e)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedEngine &&
+            MACOS_ONLY_ENGINE_IDS.has(selectedEngine) &&
+            !isMacOS ? (
+              <p className='text-muted-foreground text-xs'>
+                Apple Vision OCR requires macOS. Please pick another OCR engine.
+              </p>
+            ) : null}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -531,6 +573,8 @@ function ProvidersPane({
   catalogs,
   config,
   drafts,
+  currentTranslator,
+  onSetTranslator,
   onBaseUrlChange,
   onBaseUrlBlur,
   onApiKeyChange,
@@ -540,6 +584,8 @@ function ProvidersPane({
   catalogs: LlmProviderCatalog[]
   config: UpdateConfigBody | null
   drafts: Record<string, string>
+  currentTranslator: string | undefined
+  onSetTranslator: (id: string) => void
   onBaseUrlChange: (id: string, v: string) => void
   onBaseUrlBlur: () => void
   onApiKeyChange: (id: string, v: string) => void
@@ -650,6 +696,31 @@ function ProvidersPane({
                         </Button>
                       ) : null}
                     </div>
+                  </div>
+
+                  {/* Default translator toggle */}
+                  <div className='flex items-center justify-between rounded-lg border border-dashed p-2.5'>
+                    <div className='flex items-center gap-2 text-xs'>
+                      <ZapIcon className='text-muted-foreground size-3.5' />
+                      <span className='text-muted-foreground'>
+                        {t('settings.defaultTranslator')}
+                      </span>
+                    </div>
+                    {currentTranslator === provider.id ? (
+                      <span className='flex items-center gap-1.5 text-xs font-medium text-green-500'>
+                        <CheckCircleIcon className='size-3.5' />
+                        {t('settings.defaultTranslatorActive')}
+                      </span>
+                    ) : (
+                      <Button
+                        variant='outline'
+                        size='sm'
+                        className='h-6 px-2 text-xs'
+                        onClick={() => onSetTranslator(provider.id)}
+                      >
+                        {t('settings.defaultTranslatorSet')}
+                      </Button>
+                    )}
                   </div>
                 </AccordionContent>
               </AccordionItem>

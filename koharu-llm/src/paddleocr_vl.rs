@@ -22,28 +22,113 @@ use crate::safe::mtmd::{
 use crate::safe::sampling::LlamaSampler;
 use crate::safe::token::LlamaToken;
 
-const HF_REPO: &str = "PaddlePaddle/PaddleOCR-VL-1.5-GGUF";
-const MODEL_FILENAME: &str = "PaddleOCR-VL-1.5.gguf";
-const MMPROJ_FILENAME: &str = "PaddleOCR-VL-1.5-mmproj.gguf";
 const DEFAULT_MEDIA_MARKER: &str = "<__media__>";
 const DEFAULT_GPU_LAYERS: u32 = 1000;
 const DEFAULT_MAX_NEW_TOKENS: usize = 128;
 const MAX_UBATCH: u32 = 512;
 
+// --- PaddleOCR-VL 1.5 -------------------------------------------------------
+const PADDLE_REPO: &str = "PaddlePaddle/PaddleOCR-VL-1.5-GGUF";
+const PADDLE_MODEL: &str = "PaddleOCR-VL-1.5.gguf";
+const PADDLE_MMPROJ: &str = "PaddleOCR-VL-1.5-mmproj.gguf";
+
 koharu_runtime::declare_hf_model_package!(
     id: "model:paddleocr-vl:weights",
-    repo: HF_REPO,
-    file: MODEL_FILENAME,
+    repo: PADDLE_REPO,
+    file: PADDLE_MODEL,
     bootstrap: true,
     order: 120,
 );
 koharu_runtime::declare_hf_model_package!(
     id: "model:paddleocr-vl:mmproj",
-    repo: HF_REPO,
-    file: MMPROJ_FILENAME,
+    repo: PADDLE_REPO,
+    file: PADDLE_MMPROJ,
     bootstrap: true,
     order: 121,
 );
+
+// --- GLM-OCR ----------------------------------------------------------------
+const GLM_REPO: &str = "ggml-org/GLM-OCR-GGUF";
+const GLM_MODEL: &str = "GLM-OCR-Q8_0.gguf";
+const GLM_MMPROJ: &str = "mmproj-GLM-OCR-f16.gguf";
+
+koharu_runtime::declare_hf_model_package!(
+    id: "model:glm-ocr:weights",
+    repo: GLM_REPO,
+    file: GLM_MODEL,
+    bootstrap: false,
+    order: 122,
+);
+koharu_runtime::declare_hf_model_package!(
+    id: "model:glm-ocr:mmproj",
+    repo: GLM_REPO,
+    file: GLM_MMPROJ,
+    bootstrap: false,
+    order: 123,
+);
+
+// --- Qwen3-VL ---------------------------------------------------------------
+const QWEN3_VL_REPO: &str = "bartowski/Qwen3-VL-7B-Instruct-GGUF";
+const QWEN3_VL_MODEL: &str = "Qwen3-VL-7B-Instruct-Q4_K_M.gguf";
+const QWEN3_VL_MMPROJ: &str = "Qwen3-VL-7B-Instruct-mmproj.gguf";
+
+koharu_runtime::declare_hf_model_package!(
+    id: "model:qwen3-vl:weights",
+    repo: QWEN3_VL_REPO,
+    file: QWEN3_VL_MODEL,
+    bootstrap: false,
+    order: 124,
+);
+koharu_runtime::declare_hf_model_package!(
+    id: "model:qwen3-vl:mmproj",
+    repo: QWEN3_VL_REPO,
+    file: QWEN3_VL_MMPROJ,
+    bootstrap: false,
+    order: 125,
+);
+
+/// Which vision-language OCR backend to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VisionOcrBackend {
+    PaddleOcrVl15,
+    GlmOcr,
+    Qwen3Vl,
+}
+
+impl VisionOcrBackend {
+    fn hf_repo(self) -> &'static str {
+        match self {
+            Self::PaddleOcrVl15 => PADDLE_REPO,
+            Self::GlmOcr => GLM_REPO,
+            Self::Qwen3Vl => QWEN3_VL_REPO,
+        }
+    }
+
+    fn model_filename(self) -> &'static str {
+        match self {
+            Self::PaddleOcrVl15 => PADDLE_MODEL,
+            Self::GlmOcr => GLM_MODEL,
+            Self::Qwen3Vl => QWEN3_VL_MODEL,
+        }
+    }
+
+    fn mmproj_filename(self) -> &'static str {
+        match self {
+            Self::PaddleOcrVl15 => PADDLE_MMPROJ,
+            Self::GlmOcr => GLM_MMPROJ,
+            Self::Qwen3Vl => QWEN3_VL_MMPROJ,
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::PaddleOcrVl15 => "PaddleOCR-VL-1.5",
+            Self::GlmOcr => "GLM-OCR",
+            Self::Qwen3Vl => "Qwen3-VL",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -115,11 +200,21 @@ impl PaddleOcrVl {
         cpu: bool,
         backend: Arc<LlamaBackend>,
     ) -> Result<Self> {
-        let files = download_model_files(runtime).await?;
+        Self::load_backend(runtime, cpu, backend, VisionOcrBackend::PaddleOcrVl15).await
+    }
+
+    pub async fn load_backend(
+        runtime: &RuntimeManager,
+        cpu: bool,
+        backend: Arc<LlamaBackend>,
+        ocr_backend: VisionOcrBackend,
+    ) -> Result<Self> {
+        let files = download_model_files(runtime, ocr_backend).await?;
+        let display_name = ocr_backend.display_name();
         let runtime = runtime.clone();
         tokio::task::spawn_blocking(move || Self::load_from_files(&runtime, files, cpu, backend))
             .await
-            .context("failed to join PaddleOCR-VL loading task")?
+            .with_context(|| format!("failed to join {display_name} loading task"))?
     }
 
     pub fn load_from_dir(
@@ -128,7 +223,7 @@ impl PaddleOcrVl {
         cpu: bool,
         backend: Arc<LlamaBackend>,
     ) -> Result<Self> {
-        let files = resolve_local_model_files(dir.as_ref())?;
+        let files = resolve_local_model_files(dir.as_ref(), VisionOcrBackend::PaddleOcrVl15)?;
         Self::load_from_files(runtime, files, cpu, backend)
     }
 
@@ -369,23 +464,35 @@ impl PaddleOcrVl {
 }
 
 pub async fn prefetch(runtime: &RuntimeManager) -> Result<()> {
-    download_model_files(runtime).await?;
+    download_model_files(runtime, VisionOcrBackend::PaddleOcrVl15).await?;
     Ok(())
 }
 
-async fn download_model_files(runtime: &RuntimeManager) -> Result<ModelFiles> {
+async fn download_model_files(
+    runtime: &RuntimeManager,
+    ocr_backend: VisionOcrBackend,
+) -> Result<ModelFiles> {
     let artifacts = runtime.downloads();
+    let repo = ocr_backend.hf_repo();
+    let model_file = ocr_backend.model_filename();
+    let mmproj_file = ocr_backend.mmproj_filename();
+    let backend_name = ocr_backend.display_name();
     let (model, mmproj) = tokio::try_join!(
-        artifacts.huggingface_model(HF_REPO, MODEL_FILENAME),
-        artifacts.huggingface_model(HF_REPO, MMPROJ_FILENAME),
-    )?;
+        artifacts.huggingface_model(repo, model_file),
+        artifacts.huggingface_model(repo, mmproj_file),
+    )
+    .with_context(|| {
+        format!(
+            "failed to download {backend_name} OCR assets (repo: `{repo}`, model: `{model_file}`, mmproj: `{mmproj_file}`)"
+        )
+    })?;
 
     Ok(ModelFiles { model, mmproj })
 }
 
-fn resolve_local_model_files(dir: &Path) -> Result<ModelFiles> {
-    let preferred_model = dir.join(MODEL_FILENAME);
-    let preferred_mmproj = dir.join(MMPROJ_FILENAME);
+fn resolve_local_model_files(dir: &Path, ocr_backend: VisionOcrBackend) -> Result<ModelFiles> {
+    let preferred_model = dir.join(ocr_backend.model_filename());
+    let preferred_mmproj = dir.join(ocr_backend.mmproj_filename());
     if preferred_model.exists() && preferred_mmproj.exists() {
         return Ok(ModelFiles {
             model: preferred_model,
@@ -396,7 +503,7 @@ fn resolve_local_model_files(dir: &Path) -> Result<ModelFiles> {
     let mut model = None;
     let mut mmproj = None;
     for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("unable to read PaddleOCR-VL model dir `{}`", dir.display()))?
+        .with_context(|| format!("unable to read OCR model dir `{}`", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
@@ -422,18 +529,9 @@ fn resolve_local_model_files(dir: &Path) -> Result<ModelFiles> {
     }
 
     Ok(ModelFiles {
-        model: model.with_context(|| {
-            format!(
-                "missing `{MODEL_FILENAME}` (or any non-mmproj GGUF) in `{}`",
-                dir.display()
-            )
-        })?,
-        mmproj: mmproj.with_context(|| {
-            format!(
-                "missing `{MMPROJ_FILENAME}` (or any mmproj GGUF) in `{}`",
-                dir.display()
-            )
-        })?,
+        model: model
+            .with_context(|| format!("missing a non-mmproj GGUF in `{}`", dir.display()))?,
+        mmproj: mmproj.with_context(|| format!("missing a mmproj GGUF in `{}`", dir.display()))?,
     })
 }
 

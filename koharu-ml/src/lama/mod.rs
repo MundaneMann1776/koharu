@@ -1,7 +1,7 @@
 mod fft;
 mod model;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use candle_core::{DType, Device, Tensor};
 use image::{
     DynamicImage, GenericImageView, GrayImage, Luma, Rgb, RgbImage,
@@ -21,15 +21,96 @@ use crate::{
     loading,
 };
 
-const HF_REPO: &str = "mayocream/lama-manga";
+// --- lama-manga (default) ---------------------------------------------------
+const LAMA_MANGA_REPO: &str = "mayocream/lama-manga";
+const LAMA_MANGA_FILE: &str = "lama-manga.safetensors";
 
 koharu_runtime::declare_hf_model_package!(
     id: "model:lama:weights",
-    repo: "mayocream/lama-manga",
-    file: "lama-manga.safetensors",
+    repo: LAMA_MANGA_REPO,
+    file: LAMA_MANGA_FILE,
     bootstrap: false,
     order: 130,
 );
+
+// --- big-lama ---------------------------------------------------------------
+// The upstream checkpoint is a PyTorch pickle (.pt) saved by the LaMa
+// training code. candle's VarBuilder::from_pth can load this directly.
+const BIG_LAMA_REPO: &str = "smartywu/big-lama";
+const BIG_LAMA_FILE: &str = "big-lama.pt";
+
+koharu_runtime::declare_hf_model_package!(
+    id: "model:big-lama:weights",
+    repo: BIG_LAMA_REPO,
+    file: BIG_LAMA_FILE,
+    bootstrap: false,
+    order: 131,
+);
+
+// --- anime-manga-inpainting -------------------------------------------------
+// Big-LaMa fine-tuned on 300k manga + anime images by dreMaz.
+// Same FFC-LaMa architecture — loads with the existing model::Lama::load().
+// The .ckpt is a PyTorch Lightning checkpoint; same prefix-fallback strategy
+// used for big-lama.pt applies here.
+const ANIME_MANGA_REPO: &str = "dreMaz/AnimeMangaInpainting";
+const ANIME_MANGA_FILE: &str = "lama_large_512px.ckpt";
+
+koharu_runtime::declare_hf_model_package!(
+    id: "model:anime-manga-inpaint:weights",
+    repo: ANIME_MANGA_REPO,
+    file: ANIME_MANGA_FILE,
+    bootstrap: false,
+    order: 132,
+);
+
+/// Which LaMa inpainting weights to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LamaVariant {
+    /// Lightweight manga-tuned model (fast, small).
+    LamaManga,
+    /// Full big-LaMa (~200 MB, better on complex textures).
+    BigLama,
+    /// Big-LaMa fine-tuned on 300k manga/anime images (~205 MB).
+    /// Best choice for manga and webtoon content.
+    AnimeManga,
+}
+
+impl LamaVariant {
+    fn hf_repo(self) -> &'static str {
+        match self {
+            Self::LamaManga => LAMA_MANGA_REPO,
+            Self::BigLama => BIG_LAMA_REPO,
+            Self::AnimeManga => ANIME_MANGA_REPO,
+        }
+    }
+
+    fn filename(self) -> &'static str {
+        match self {
+            Self::LamaManga => LAMA_MANGA_FILE,
+            Self::BigLama => BIG_LAMA_FILE,
+            Self::AnimeManga => ANIME_MANGA_FILE,
+        }
+    }
+}
+
+/// Try three common PyTorch Lightning key-prefix layouts for LaMa checkpoints
+/// and return the first that loads successfully.
+fn load_lama_from_pth(vb: candle_nn::VarBuilder) -> Result<model::Lama> {
+    let prefixes: &[&[&str]] = &[
+        &["state_dict", "generator"],
+        &["generator"],
+        &[],
+    ];
+    let mut last_err = anyhow::anyhow!("no matching key prefix found in checkpoint");
+    for prefix in prefixes {
+        let scoped = prefix.iter().fold(vb.clone(), |v, p: &&str| v.pp(*p));
+        match model::Lama::load(&scoped) {
+            Ok(m) => return Ok(m),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
 
 const BALLOON_CANNY_LOW: f32 = 70.0;
 const BALLOON_CANNY_HIGH: f32 = 140.0;
@@ -52,14 +133,44 @@ pub struct Lama {
 
 impl Lama {
     pub async fn load(runtime: &RuntimeManager, cpu: bool) -> Result<Self> {
+        Self::load_variant(runtime, cpu, LamaVariant::LamaManga).await
+    }
+
+    pub async fn load_variant(
+        runtime: &RuntimeManager,
+        cpu: bool,
+        variant: LamaVariant,
+    ) -> Result<Self> {
         let device = device(cpu)?;
         let weights_path = runtime
             .downloads()
-            .huggingface_model(HF_REPO, "lama-manga.safetensors")
+            .huggingface_model(variant.hf_repo(), variant.filename())
             .await?;
-        let model = loading::load_buffered_safetensors_path(&weights_path, &device, |vb| {
-            model::Lama::load(&vb)
-        })?;
+
+        let model = match variant {
+            LamaVariant::LamaManga => {
+                loading::load_buffered_safetensors_path(&weights_path, &device, |vb| {
+                    model::Lama::load(&vb)
+                })?
+            }
+            LamaVariant::BigLama | LamaVariant::AnimeManga => {
+                // Both big-lama.pt and lama_large_512px.ckpt are PyTorch Lightning
+                // checkpoints. Load via from_pth and try three key-prefix layouts:
+                //   • state_dict.generator.model.*  (Lightning full checkpoint)
+                //   • generator.model.*             (plain state_dict save)
+                //   • model.*                       (generator-only export)
+                let filename = variant.filename();
+                let vb = candle_nn::VarBuilder::from_pth(
+                    &weights_path,
+                    candle_core::DType::F32,
+                    &device,
+                )
+                .with_context(|| format!("failed to open {filename}"))?;
+
+                load_lama_from_pth(vb)
+                    .with_context(|| format!("{filename}: could not find generator weights under any expected key prefix"))?
+            }
+        };
 
         Ok(Self { model, device })
     }

@@ -48,6 +48,16 @@ You can swap individual stages in **Settings > Engines**. Built-in alternatives 
 - [Manga OCR](https://huggingface.co/mayocream/manga-ocr) and [MIT 48px OCR](https://huggingface.co/mayocream/mit48px-ocr) as alternative OCR engines
 - [lama-manga](https://huggingface.co/mayocream/lama-manga) as an alternative inpainter
 
+Additional OCR engines are available in current builds:
+
+- `GLM-OCR` and `Qwen3-VL` as experimental OCR backends
+- `Apple Vision OCR` on macOS
+
+Runtime note:
+
+- `PaddleOCR-VL` remains the default OCR backend
+- if one of the experimental OCR engines fails with known model-download or runtime-shape errors, Koharu retries OCR with `PaddleOCR-VL` for the page
+
 ## Local LLMs
 
 Koharu supports local GGUF models through [llama.cpp](https://github.com/ggml-org/llama.cpp). These models run on your machine and are downloaded on demand when you select them in the LLM picker.

@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use koharu_core::{Document, TextShaderEffect, TextStrokeStyle};
 use petgraph::algo::toposort;
@@ -69,6 +69,16 @@ fn block_has_ocr_text(block: &koharu_core::TextBlock) -> bool {
     has_non_empty_text(block.text.as_deref())
 }
 
+fn block_has_ocr_output(block: &koharu_core::TextBlock) -> bool {
+    block.text.is_some()
+}
+
+fn has_any_non_empty_ocr_text(doc: &Document) -> bool {
+    doc.text_blocks
+        .iter()
+        .any(|block| has_non_empty_text(block.text.as_deref()))
+}
+
 fn block_has_translation(block: &koharu_core::TextBlock) -> bool {
     if !block_has_ocr_text(block) {
         return true;
@@ -88,7 +98,9 @@ impl Artifact {
                     || doc.text_blocks.iter().all(|b| b.font_prediction.is_some())
             }
             Self::OcrText => {
-                doc.text_blocks.is_empty() || doc.text_blocks.iter().all(block_has_ocr_text)
+                doc.text_blocks.is_empty()
+                    || (doc.text_blocks.iter().all(block_has_ocr_output)
+                        && has_any_non_empty_ocr_text(doc))
             }
             Self::Translations => {
                 doc.text_blocks.is_empty() || doc.text_blocks.iter().all(block_has_translation)
@@ -380,20 +392,78 @@ where
             continue;
         }
         on_step(seq, info.id).await;
-        async {
-            let engine = res.registry.get(info.id, res).await?;
-            let patch = engine.run(&doc, res, options).await?;
-            if let Some(f) = patch.take() {
-                res.storage.update_page(page_id, f).await?;
+        let result = run_step(info, res, page_id, options).await;
+        if let Err(err) = result {
+            if let Some(fallback_id) = ocr_fallback_target(info.id, &err) {
+                tracing::warn!(
+                    page_id,
+                    step = info.id,
+                    fallback = fallback_id,
+                    error = %err,
+                    "OCR step failed; retrying with fallback engine"
+                );
+                let fallback = Registry::find(fallback_id)?;
+                on_step(seq, fallback_id).await;
+                run_step(fallback, res, page_id, options)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "step '{}' failed and fallback '{}' also failed",
+                            info.id, fallback_id
+                        )
+                    })?;
+                continue;
             }
-            let updated = res.storage.page(page_id).await?;
-            verify_step_outputs(info, &updated)?;
-            Ok::<_, anyhow::Error>(())
+            return Err(err);
         }
-        .instrument(tracing::info_span!("step", engine = info.id))
-        .await?;
     }
     Ok(())
+}
+
+async fn run_step(
+    info: &EngineInfo,
+    res: &AppResources,
+    page_id: &str,
+    options: &PipelineRunOptions,
+) -> Result<()> {
+    async {
+        let doc = res.storage.page(page_id).await?;
+        let engine = res.registry.get(info.id, res).await?;
+        let patch = engine.run(&doc, res, options).await?;
+        if let Some(f) = patch.take() {
+            res.storage.update_page(page_id, f).await?;
+        }
+        let updated = res.storage.page(page_id).await?;
+        verify_step_outputs(info, &updated)?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .instrument(tracing::info_span!("step", engine = info.id))
+    .await
+}
+
+fn ocr_fallback_target(step_id: &str, err: &anyhow::Error) -> Option<&'static str> {
+    const DEFAULT_OCR: &str = "paddle-ocr-vl-1.5";
+
+    if !matches!(step_id, "glm-ocr" | "qwen3-vl" | "apple-vision-ocr") {
+        return None;
+    }
+    if !should_retry_ocr_with_default(err) {
+        return None;
+    }
+    Some(DEFAULT_OCR)
+}
+
+fn should_retry_ocr_with_default(err: &anyhow::Error) -> bool {
+    let message = err.to_string().to_ascii_lowercase();
+    [
+        "failed to download hf model file",
+        "shape mismatch in",
+        "unable to load model",
+        "failed to initialize llama.cpp runtime bindings",
+        "did not produce required artifacts: ocrtext",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 fn verify_step_outputs(info: &EngineInfo, doc: &Document) -> Result<()> {
@@ -824,6 +894,193 @@ inventory::submit! {
     }
 }
 
+// --- GLM-OCR -----------------------------------------------------------------
+
+struct GlmOcrEngine(std::sync::Mutex<koharu_llm::paddleocr_vl::PaddleOcrVl>);
+
+#[async_trait]
+impl Engine for GlmOcrEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        if doc.text_blocks.is_empty() {
+            return Ok(Patch::none());
+        }
+        let (source, regions) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let regions: Vec<_> = doc
+                .text_blocks
+                .iter()
+                .map(|b| koharu_ml::comic_text_detector::crop_text_block_bbox(&source, b))
+                .collect();
+            (source, regions)
+        };
+        let outputs = {
+            let _s = tracing::info_span!("inference", blocks = regions.len()).entered();
+            let mut ocr = self
+                .0
+                .lock()
+                .map_err(|_| anyhow::anyhow!("GLM-OCR mutex poisoned"))?;
+            ocr.inference_images(
+                &regions,
+                koharu_llm::paddleocr_vl::PaddleOcrVlTask::Ocr,
+                128,
+            )?
+        };
+        let mut blocks = doc.text_blocks.clone();
+        for (block, out) in blocks.iter_mut().zip(outputs) {
+            block.text = Some(out.text);
+        }
+        let _ = source;
+        Ok(Patch::apply(|doc| doc.text_blocks = blocks))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "glm-ocr",
+        name: "GLM-OCR",
+        needs: &[Artifact::TextBlocks],
+        produces: &[Artifact::OcrText],
+        load: |res| Box::pin(async move {
+            let backend = res.llm.backend();
+            let m = koharu_llm::paddleocr_vl::PaddleOcrVl::load_backend(
+                &res.runtime,
+                matches!(res.device, koharu_ml::Device::Cpu),
+                backend,
+                koharu_llm::paddleocr_vl::VisionOcrBackend::GlmOcr,
+            ).await?;
+            Ok(Box::new(GlmOcrEngine(std::sync::Mutex::new(m))) as Box<dyn Engine>)
+        }),
+    }
+}
+
+// --- Qwen3-VL ----------------------------------------------------------------
+
+struct Qwen3VlEngine(std::sync::Mutex<koharu_llm::paddleocr_vl::PaddleOcrVl>);
+
+#[async_trait]
+impl Engine for Qwen3VlEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        if doc.text_blocks.is_empty() {
+            return Ok(Patch::none());
+        }
+        let (source, regions) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let regions: Vec<_> = doc
+                .text_blocks
+                .iter()
+                .map(|b| koharu_ml::comic_text_detector::crop_text_block_bbox(&source, b))
+                .collect();
+            (source, regions)
+        };
+        let outputs = {
+            let _s = tracing::info_span!("inference", blocks = regions.len()).entered();
+            let mut ocr = self
+                .0
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Qwen3-VL mutex poisoned"))?;
+            ocr.inference_images(
+                &regions,
+                koharu_llm::paddleocr_vl::PaddleOcrVlTask::Ocr,
+                256,
+            )?
+        };
+        let mut blocks = doc.text_blocks.clone();
+        for (block, out) in blocks.iter_mut().zip(outputs) {
+            block.text = Some(out.text);
+        }
+        let _ = source;
+        Ok(Patch::apply(|doc| doc.text_blocks = blocks))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "qwen3-vl",
+        name: "Qwen3-VL",
+        needs: &[Artifact::TextBlocks],
+        produces: &[Artifact::OcrText],
+        load: |res| Box::pin(async move {
+            let backend = res.llm.backend();
+            let m = koharu_llm::paddleocr_vl::PaddleOcrVl::load_backend(
+                &res.runtime,
+                matches!(res.device, koharu_ml::Device::Cpu),
+                backend,
+                koharu_llm::paddleocr_vl::VisionOcrBackend::Qwen3Vl,
+            ).await?;
+            Ok(Box::new(Qwen3VlEngine(std::sync::Mutex::new(m))) as Box<dyn Engine>)
+        }),
+    }
+}
+
+// --- Apple Vision OCR --------------------------------------------------------
+
+struct AppleVisionOcrEngine(koharu_ml::apple_vision_ocr::AppleVisionOcr);
+
+#[async_trait]
+impl Engine for AppleVisionOcrEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        if doc.text_blocks.is_empty() {
+            return Ok(Patch::none());
+        }
+        let (source, regions) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let regions: Vec<_> = doc
+                .text_blocks
+                .iter()
+                .map(|b| koharu_ml::comic_text_detector::crop_text_block_bbox(&source, b))
+                .collect();
+            (source, regions)
+        };
+        let texts = {
+            let _s = tracing::info_span!("inference", blocks = regions.len()).entered();
+            regions
+                .iter()
+                .map(|region| self.0.recognize(region))
+                .collect::<Result<Vec<_>>>()?
+        };
+        let mut blocks = doc.text_blocks.clone();
+        for (block, text) in blocks.iter_mut().zip(texts) {
+            block.text = Some(text);
+        }
+        let _ = source;
+        Ok(Patch::apply(|doc| doc.text_blocks = blocks))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "apple-vision-ocr",
+        name: "Apple Vision OCR",
+        needs: &[Artifact::TextBlocks],
+        produces: &[Artifact::OcrText],
+        load: |_res| Box::pin(async move {
+            if !koharu_ml::apple_vision_ocr::AppleVisionOcr::available() {
+                anyhow::bail!("Apple Vision OCR is only available on macOS");
+            }
+            let ocr = koharu_ml::apple_vision_ocr::AppleVisionOcr::new(vec![])?;
+            Ok(Box::new(AppleVisionOcrEngine(ocr)) as Box<dyn Engine>)
+        }),
+    }
+}
+
 // --- Manga OCR ---------------------------------------------------------------
 
 struct MangaOcrEngine(koharu_ml::manga_ocr::MangaOcr);
@@ -1002,6 +1259,254 @@ inventory::submit! {
         load: |res| Box::pin(async move {
             let m = koharu_ml::lama::Lama::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
             Ok(Box::new(LamaInpaintEngine(m)) as Box<dyn Engine>)
+        }),
+    }
+}
+
+// --- Big-LaMa Inpainting --------------------------------------------------
+
+struct BigLamaInpaintEngine(koharu_ml::lama::Lama);
+
+#[async_trait]
+impl Engine for BigLamaInpaintEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        let seg_ref = doc
+            .segment
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no segment mask"))?;
+        let (source, segment) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let segment: SerializableDynamicImage = res.storage.images.load(seg_ref)?.into();
+            (source, segment)
+        };
+        let result = {
+            let _s = tracing::info_span!("inference").entered();
+            self.0
+                .inference_with_blocks(&source, &segment, Some(&doc.text_blocks))?
+        };
+        let blob = {
+            let _s = tracing::info_span!("save").entered();
+            res.storage.images.store_webp(&result)?
+        };
+        Ok(Patch::apply(|doc| doc.inpainted = Some(blob)))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "big-lama",
+        name: "Big LaMa",
+        needs: &[Artifact::Segment],
+        produces: &[Artifact::Inpainted],
+        load: |res| Box::pin(async move {
+            let m = koharu_ml::lama::Lama::load_variant(
+                &res.runtime,
+                matches!(res.device, koharu_ml::Device::Cpu),
+                koharu_ml::lama::LamaVariant::BigLama,
+            ).await?;
+            Ok(Box::new(BigLamaInpaintEngine(m)) as Box<dyn Engine>)
+        }),
+    }
+}
+
+// --- Anime/Manga Inpainting -----------------------------------------------
+
+struct AnimeMangaInpaintEngine(koharu_ml::lama::Lama);
+
+#[async_trait]
+impl Engine for AnimeMangaInpaintEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        let seg_ref = doc
+            .segment
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no segment mask"))?;
+        let (source, segment) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let segment: SerializableDynamicImage = res.storage.images.load(seg_ref)?.into();
+            (source, segment)
+        };
+        let result = {
+            let _s = tracing::info_span!("inference").entered();
+            self.0
+                .inference_with_blocks(&source, &segment, Some(&doc.text_blocks))?
+        };
+        let blob = {
+            let _s = tracing::info_span!("save").entered();
+            res.storage.images.store_webp(&result)?
+        };
+        Ok(Patch::apply(|doc| doc.inpainted = Some(blob)))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "anime-manga-inpaint",
+        name: "Anime/Manga Inpainting",
+        needs: &[Artifact::Segment],
+        produces: &[Artifact::Inpainted],
+        load: |res| Box::pin(async move {
+            let m = koharu_ml::lama::Lama::load_variant(
+                &res.runtime,
+                matches!(res.device, koharu_ml::Device::Cpu),
+                koharu_ml::lama::LamaVariant::AnimeManga,
+            ).await?;
+            Ok(Box::new(AnimeMangaInpaintEngine(m)) as Box<dyn Engine>)
+        }),
+    }
+}
+
+// --- AOT-GAN Inpainting ---------------------------------------------------
+
+struct AotGanInpaintEngine(koharu_ml::aot_inpainting_gan::AotGan);
+
+#[async_trait]
+impl Engine for AotGanInpaintEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        let seg_ref = doc
+            .segment
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no segment mask"))?;
+        let (source, segment) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let segment: SerializableDynamicImage = res.storage.images.load(seg_ref)?.into();
+            (source, segment)
+        };
+        let result = {
+            let _s = tracing::info_span!("inference").entered();
+            self.0.inference(&source, &segment)?
+        };
+        let blob = {
+            let _s = tracing::info_span!("save").entered();
+            res.storage.images.store_webp(&result)?
+        };
+        Ok(Patch::apply(|doc| doc.inpainted = Some(blob)))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "aot-gan",
+        name: "AOT-GAN",
+        needs: &[Artifact::Segment],
+        produces: &[Artifact::Inpainted],
+        load: |res| Box::pin(async move {
+            let m = koharu_ml::aot_inpainting_gan::AotGan::load(
+                &res.runtime,
+                matches!(res.device, koharu_ml::Device::Cpu),
+            ).await?;
+            Ok(Box::new(AotGanInpaintEngine(m)) as Box<dyn Engine>)
+        }),
+    }
+}
+
+// --- MI-GAN Inpainting (via vision.cpp subprocess) -------------------------
+
+struct MiGanInpaintEngine(koharu_ml::migan::MiGan);
+
+#[async_trait]
+impl Engine for MiGanInpaintEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        let seg_ref = doc
+            .segment
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no segment mask"))?;
+        let (source, segment) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let segment: SerializableDynamicImage = res.storage.images.load(seg_ref)?.into();
+            (source, segment)
+        };
+        let result = {
+            let _s = tracing::info_span!("inference").entered();
+            self.0.inference(&source, &segment)?
+        };
+        let blob = {
+            let _s = tracing::info_span!("save").entered();
+            res.storage.images.store_webp(&result)?
+        };
+        Ok(Patch::apply(|doc| doc.inpainted = Some(blob)))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "mi-gan",
+        name: "MI-GAN (14 MB, CPU)",
+        needs: &[Artifact::Segment],
+        produces: &[Artifact::Inpainted],
+        load: |res| Box::pin(async move {
+            let m = koharu_ml::migan::MiGan::load(&res.runtime).await?;
+            Ok(Box::new(MiGanInpaintEngine(m)) as Box<dyn Engine>)
+        }),
+    }
+}
+
+// --- MAT Inpainting -------------------------------------------------------
+
+struct MatInpaintEngine(koharu_ml::mat::Mat);
+
+#[async_trait]
+impl Engine for MatInpaintEngine {
+    async fn run(
+        &self,
+        doc: &Document,
+        res: &AppResources,
+        _options: &PipelineRunOptions,
+    ) -> Result<Patch> {
+        let seg_ref = doc
+            .segment
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no segment mask"))?;
+        let (source, segment) = {
+            let _s = tracing::info_span!("load_image").entered();
+            let source: SerializableDynamicImage = res.storage.images.load(&doc.source)?.into();
+            let segment: SerializableDynamicImage = res.storage.images.load(seg_ref)?.into();
+            (source, segment)
+        };
+        let result = {
+            let _s = tracing::info_span!("inference").entered();
+            self.0.inference(&source, &segment)?
+        };
+        let blob = {
+            let _s = tracing::info_span!("save").entered();
+            res.storage.images.store_webp(&result)?
+        };
+        Ok(Patch::apply(|doc| doc.inpainted = Some(blob)))
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "mat",
+        name: "MAT (Mask-Aware Transformer)",
+        needs: &[Artifact::Segment],
+        produces: &[Artifact::Inpainted],
+        load: |res| Box::pin(async move {
+            let m = koharu_ml::mat::Mat::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            Ok(Box::new(MatInpaintEngine(m)) as Box<dyn Engine>)
         }),
     }
 }
@@ -1496,6 +2001,34 @@ mod tests {
     }
 
     #[test]
+    fn ocr_readiness_rejects_all_empty_text() {
+        let mut doc = Document::default();
+        doc.text_blocks = vec![TextBlock {
+            text: Some(String::new()),
+            ..Default::default()
+        }];
+
+        assert!(!Artifact::OcrText.ready(&doc));
+    }
+
+    #[test]
+    fn ocr_readiness_accepts_mixed_empty_and_non_empty_blocks() {
+        let mut doc = Document::default();
+        doc.text_blocks = vec![
+            TextBlock {
+                text: Some(String::new()),
+                ..Default::default()
+            },
+            TextBlock {
+                text: Some("hello".to_string()),
+                ..Default::default()
+            },
+        ];
+
+        assert!(Artifact::OcrText.ready(&doc));
+    }
+
+    #[test]
     fn verify_step_outputs_reports_missing_artifacts() {
         let info = EngineInfo {
             id: "llm",
@@ -1518,6 +2051,44 @@ mod tests {
             err.to_string()
                 .contains("did not produce required artifacts")
         );
+    }
+
+    #[test]
+    fn verify_step_outputs_reports_missing_ocr_artifact_for_all_empty_text() {
+        let info = EngineInfo {
+            id: "apple-vision-ocr",
+            name: "Apple Vision OCR",
+            needs: &[Artifact::TextBlocks],
+            produces: &[Artifact::OcrText],
+            load: |_res| Box::pin(async move { unreachable!("not used in test") }),
+        };
+        let doc = Document {
+            text_blocks: vec![TextBlock {
+                text: Some("   ".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let err = verify_step_outputs(&info, &doc).expect_err("all-empty OCR output");
+        assert!(err.to_string().contains("did not produce required artifacts: OcrText"));
+    }
+
+    #[test]
+    fn ocr_fallback_is_enabled_for_known_runtime_failures() {
+        let err = anyhow::anyhow!("shape mismatch in sub, lhs: [1, 256, 128, 128]");
+        assert_eq!(
+            ocr_fallback_target("glm-ocr", &err),
+            Some("paddle-ocr-vl-1.5")
+        );
+        assert_eq!(
+            ocr_fallback_target(
+                "apple-vision-ocr",
+                &anyhow::anyhow!("did not produce required artifacts: OcrText")
+            ),
+            Some("paddle-ocr-vl-1.5")
+        );
+        assert_eq!(ocr_fallback_target("paddle-ocr-vl-1.5", &err), None);
     }
 
     #[test]

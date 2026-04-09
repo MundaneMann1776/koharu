@@ -263,6 +263,15 @@ pub enum ModelId {
         )
     )]
     Qwen3_5_35bA3bUncensored,
+    #[strum(
+        serialize = "exaone-4.0-1.2b-reasoning",
+        props(
+            repo = "bartowski/EXAONE-4.0-1.2B-Reasoning-GGUF",
+            filename = "EXAONE-4.0-1.2B-Reasoning-Q8_0.gguf",
+            languages = "*"
+        )
+    )]
+    ExaOne4_0_1_2bReasoning,
 }
 
 impl ModelId {
@@ -326,6 +335,13 @@ impl ModelId {
                 top_p: Some(0.95),
                 min_p: Some(0.05),
                 repeat_penalty: 1.1,
+                ..Default::default()
+            },
+            // EXAONE 4.0 Reasoning: temp=0.6, top_p=0.95
+            Self::ExaOne4_0_1_2bReasoning => GenerateOptions {
+                temperature: 0.6,
+                top_p: Some(0.95),
+                repeat_penalty: 1.0,
                 ..Default::default()
             },
             // Default for other models
