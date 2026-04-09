@@ -394,7 +394,7 @@ where
         on_step(seq, info.id).await;
         let result = run_step(info, res, page_id, options).await;
         if let Err(err) = result {
-            if let Some(fallback_id) = ocr_fallback_target(info.id, &err) {
+            if let Some(fallback_id) = fallback_target(info.id, &err) {
                 tracing::warn!(
                     page_id,
                     step = info.id,
@@ -453,6 +453,25 @@ fn ocr_fallback_target(step_id: &str, err: &anyhow::Error) -> Option<&'static st
     Some(DEFAULT_OCR)
 }
 
+fn inpaint_fallback_target(step_id: &str, err: &anyhow::Error) -> Option<&'static str> {
+    const DEFAULT_INPAINT: &str = "aot-inpainting";
+
+    if !matches!(step_id, "mat" | "aot-gan" | "migan") {
+        return None;
+    }
+    if step_id == DEFAULT_INPAINT {
+        return None;
+    }
+    if !should_retry_inpaint_with_default(step_id, err) {
+        return None;
+    }
+    Some(DEFAULT_INPAINT)
+}
+
+fn fallback_target(step_id: &str, err: &anyhow::Error) -> Option<&'static str> {
+    ocr_fallback_target(step_id, err).or_else(|| inpaint_fallback_target(step_id, err))
+}
+
 fn should_retry_ocr_with_default(err: &anyhow::Error) -> bool {
     let message = err.to_string().to_ascii_lowercase();
     [
@@ -464,6 +483,22 @@ fn should_retry_ocr_with_default(err: &anyhow::Error) -> bool {
     ]
     .iter()
     .any(|needle| message.contains(needle))
+}
+
+fn should_retry_inpaint_with_default(step_id: &str, err: &anyhow::Error) -> bool {
+    let message = err.to_string().to_ascii_lowercase();
+    let common_needles = [
+        "failed to download hf model file",
+        "failed to open",
+        "unable to load model",
+        "shape mismatch in",
+        "did not produce required artifacts: inpainted",
+    ];
+    if common_needles.iter().any(|needle| message.contains(needle)) {
+        return true;
+    }
+
+    matches!(step_id, "mat") && message.contains("failed to load mat weights")
 }
 
 fn verify_step_outputs(info: &EngineInfo, doc: &Document) -> Result<()> {
@@ -2089,6 +2124,22 @@ mod tests {
             Some("paddle-ocr-vl-1.5")
         );
         assert_eq!(ocr_fallback_target("paddle-ocr-vl-1.5", &err), None);
+    }
+
+    #[test]
+    fn inpaint_fallback_is_enabled_for_mat_weight_load_failures() {
+        let err = anyhow::anyhow!(
+            "failed to load MAT weights — weight key names in checkpoint did not match expected layout"
+        );
+        assert_eq!(inpaint_fallback_target("mat", &err), Some("aot-inpainting"));
+        assert_eq!(inpaint_fallback_target("aot-inpainting", &err), None);
+    }
+
+    #[test]
+    fn inpaint_fallback_handles_runtime_shape_mismatch() {
+        let err = anyhow::anyhow!("shape mismatch in add, lhs: [1, 3, 512, 512]");
+        assert_eq!(inpaint_fallback_target("aot-gan", &err), Some("aot-inpainting"));
+        assert_eq!(inpaint_fallback_target("migan", &err), Some("aot-inpainting"));
     }
 
     #[test]
