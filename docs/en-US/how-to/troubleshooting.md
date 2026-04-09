@@ -133,6 +133,30 @@ Try this:
 
 If the structure is wrong, translation quality usually gets worse downstream because OCR and rendering both depend on block geometry.
 
+## OCR backend fails on specific engines
+
+Koharu can run multiple OCR engines, including `PaddleOCR-VL`, `GLM-OCR`, `Qwen3-VL`, and on macOS, `Apple Vision OCR`.
+
+Current runtime behavior:
+
+- `PaddleOCR-VL` is the default OCR backend
+- if `GLM-OCR`, `Qwen3-VL`, or `Apple Vision OCR` fails with model-download or runtime-shape errors, Koharu retries OCR with `PaddleOCR-VL` for that page
+- if an OCR step returns only empty text for every detected block, Koharu reports that as an OCR failure instead of continuing silently
+
+Common failure signatures:
+
+- `failed to download HF model file ...`
+- `shape mismatch in ...`
+- `step 'apple-vision-ocr' did not produce required artifacts: OcrText`
+
+What to check first:
+
+1. switch OCR engine to `PaddleOCR-VL` in **Settings > Engines**
+2. verify network access to Hugging Face if the error includes model-download failures
+3. rerun detection and verify text blocks are correctly placed before OCR
+
+On non-macOS systems, do not select `Apple Vision OCR`.
+
 ## Headless mode starts, but you cannot open the Web UI
 
 Check the basics first:
