@@ -492,6 +492,8 @@ fn should_retry_inpaint_with_default(step_id: &str, err: &anyhow::Error) -> bool
         "failed to open",
         "unable to load model",
         "shape mismatch in",
+        "vision-cli not found",
+        "failed to spawn vision-cli",
         "did not produce required artifacts: inpainted",
     ];
     if common_needles.iter().any(|needle| message.contains(needle)) {
@@ -2139,6 +2141,14 @@ mod tests {
     fn inpaint_fallback_handles_runtime_shape_mismatch() {
         let err = anyhow::anyhow!("shape mismatch in add, lhs: [1, 3, 512, 512]");
         assert_eq!(inpaint_fallback_target("aot-gan", &err), Some("aot-inpainting"));
+        assert_eq!(inpaint_fallback_target("migan", &err), Some("aot-inpainting"));
+    }
+
+    #[test]
+    fn inpaint_fallback_handles_missing_vision_cli_for_migan() {
+        let err = anyhow::anyhow!(
+            "vision-cli not found. Build it:\ncd vision-cpp-helper && ./build.sh"
+        );
         assert_eq!(inpaint_fallback_target("migan", &err), Some("aot-inpainting"));
     }
 
