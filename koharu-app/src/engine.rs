@@ -73,6 +73,12 @@ fn block_has_ocr_output(block: &koharu_core::TextBlock) -> bool {
     block.text.is_some()
 }
 
+fn has_any_non_empty_ocr_text(doc: &Document) -> bool {
+    doc.text_blocks
+        .iter()
+        .any(|block| has_non_empty_text(block.text.as_deref()))
+}
+
 fn block_has_translation(block: &koharu_core::TextBlock) -> bool {
     if !block_has_ocr_text(block) {
         return true;
@@ -92,7 +98,9 @@ impl Artifact {
                     || doc.text_blocks.iter().all(|b| b.font_prediction.is_some())
             }
             Self::OcrText => {
-                doc.text_blocks.is_empty() || doc.text_blocks.iter().all(block_has_ocr_output)
+                doc.text_blocks.is_empty()
+                    || (doc.text_blocks.iter().all(block_has_ocr_output)
+                        && has_any_non_empty_ocr_text(doc))
             }
             Self::Translations => {
                 doc.text_blocks.is_empty() || doc.text_blocks.iter().all(block_has_translation)
@@ -467,20 +475,6 @@ fn verify_step_outputs(info: &EngineInfo, doc: &Document) -> Result<()> {
         .collect::<Vec<_>>();
 
     if missing.is_empty() {
-        if info.produces.contains(&Artifact::OcrText)
-            && !doc.text_blocks.is_empty()
-            && doc.text_blocks.iter().all(|block| {
-                block
-                    .text
-                    .as_deref()
-                    .is_none_or(|text| text.trim().is_empty())
-            })
-        {
-            bail!(
-                "step '{}' produced OCR output but every text block was empty",
-                info.id
-            );
-        }
         return Ok(());
     }
 
@@ -2007,12 +2001,29 @@ mod tests {
     }
 
     #[test]
-    fn ocr_readiness_accepts_empty_text_when_ocr_has_run() {
+    fn ocr_readiness_rejects_all_empty_text() {
         let mut doc = Document::default();
         doc.text_blocks = vec![TextBlock {
             text: Some(String::new()),
             ..Default::default()
         }];
+
+        assert!(!Artifact::OcrText.ready(&doc));
+    }
+
+    #[test]
+    fn ocr_readiness_accepts_mixed_empty_and_non_empty_blocks() {
+        let mut doc = Document::default();
+        doc.text_blocks = vec![
+            TextBlock {
+                text: Some(String::new()),
+                ..Default::default()
+            },
+            TextBlock {
+                text: Some("hello".to_string()),
+                ..Default::default()
+            },
+        ];
 
         assert!(Artifact::OcrText.ready(&doc));
     }
@@ -2043,7 +2054,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_step_outputs_rejects_all_empty_ocr_output() {
+    fn verify_step_outputs_reports_missing_ocr_artifact_for_all_empty_text() {
         let info = EngineInfo {
             id: "apple-vision-ocr",
             name: "Apple Vision OCR",
@@ -2060,7 +2071,7 @@ mod tests {
         };
 
         let err = verify_step_outputs(&info, &doc).expect_err("all-empty OCR output");
-        assert!(err.to_string().contains("every text block was empty"));
+        assert!(err.to_string().contains("did not produce required artifacts: OcrText"));
     }
 
     #[test]
