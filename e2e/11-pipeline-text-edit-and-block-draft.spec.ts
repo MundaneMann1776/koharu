@@ -121,8 +121,8 @@ test('sprite stays aligned while dragging translated block', async ({ page }) =>
   await prepareDetectAndOcr(page)
   await runRender(page)
 
+  await page.getByTestId(selectors.tools.block).click()
   await page.getByTestId(selectors.tools.select).click()
-  await page.getByTestId(selectors.layers.rendered).click()
 
   const block = page.getByTestId(selectors.workspace.textBlock(0))
   const sprite = page.getByTestId(selectors.workspace.textBlockSprite(0))
