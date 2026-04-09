@@ -454,7 +454,7 @@ fn ocr_fallback_target(step_id: &str, err: &anyhow::Error) -> Option<&'static st
 }
 
 fn inpaint_fallback_target(step_id: &str, err: &anyhow::Error) -> Option<&'static str> {
-    const DEFAULT_INPAINT: &str = "aot-inpainting";
+    const DEFAULT_INPAINT: &str = "anime-manga-inpaint";
 
     if !matches!(step_id, "mat" | "aot-gan" | "mi-gan") {
         return None;
@@ -2133,15 +2133,24 @@ mod tests {
         let err = anyhow::anyhow!(
             "failed to load MAT weights — weight key names in checkpoint did not match expected layout"
         );
-        assert_eq!(inpaint_fallback_target("mat", &err), Some("aot-inpainting"));
+        assert_eq!(
+            inpaint_fallback_target("mat", &err),
+            Some("anime-manga-inpaint")
+        );
         assert_eq!(inpaint_fallback_target("aot-inpainting", &err), None);
     }
 
     #[test]
     fn inpaint_fallback_handles_runtime_shape_mismatch() {
         let err = anyhow::anyhow!("shape mismatch in add, lhs: [1, 3, 512, 512]");
-        assert_eq!(inpaint_fallback_target("aot-gan", &err), Some("aot-inpainting"));
-        assert_eq!(inpaint_fallback_target("mi-gan", &err), Some("aot-inpainting"));
+        assert_eq!(
+            inpaint_fallback_target("aot-gan", &err),
+            Some("anime-manga-inpaint")
+        );
+        assert_eq!(
+            inpaint_fallback_target("mi-gan", &err),
+            Some("anime-manga-inpaint")
+        );
     }
 
     #[test]
@@ -2149,7 +2158,10 @@ mod tests {
         let err = anyhow::anyhow!(
             "vision-cli not found. Build it:\ncd vision-cpp-helper && ./build.sh"
         );
-        assert_eq!(inpaint_fallback_target("mi-gan", &err), Some("aot-inpainting"));
+        assert_eq!(
+            inpaint_fallback_target("mi-gan", &err),
+            Some("anime-manga-inpaint")
+        );
     }
 
     #[test]
