@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use koharu_core::{Document, TextShaderEffect, TextStrokeStyle};
 use petgraph::algo::toposort;
@@ -69,6 +69,10 @@ fn block_has_ocr_text(block: &koharu_core::TextBlock) -> bool {
     has_non_empty_text(block.text.as_deref())
 }
 
+fn block_has_ocr_output(block: &koharu_core::TextBlock) -> bool {
+    block.text.is_some()
+}
+
 fn block_has_translation(block: &koharu_core::TextBlock) -> bool {
     if !block_has_ocr_text(block) {
         return true;
@@ -88,7 +92,7 @@ impl Artifact {
                     || doc.text_blocks.iter().all(|b| b.font_prediction.is_some())
             }
             Self::OcrText => {
-                doc.text_blocks.is_empty() || doc.text_blocks.iter().all(block_has_ocr_text)
+                doc.text_blocks.is_empty() || doc.text_blocks.iter().all(block_has_ocr_output)
             }
             Self::Translations => {
                 doc.text_blocks.is_empty() || doc.text_blocks.iter().all(block_has_translation)
@@ -380,20 +384,78 @@ where
             continue;
         }
         on_step(seq, info.id).await;
-        async {
-            let engine = res.registry.get(info.id, res).await?;
-            let patch = engine.run(&doc, res, options).await?;
-            if let Some(f) = patch.take() {
-                res.storage.update_page(page_id, f).await?;
+        let result = run_step(info, res, page_id, options).await;
+        if let Err(err) = result {
+            if let Some(fallback_id) = ocr_fallback_target(info.id, &err) {
+                tracing::warn!(
+                    page_id,
+                    step = info.id,
+                    fallback = fallback_id,
+                    error = %err,
+                    "OCR step failed; retrying with fallback engine"
+                );
+                let fallback = Registry::find(fallback_id)?;
+                on_step(seq, fallback_id).await;
+                run_step(fallback, res, page_id, options)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "step '{}' failed and fallback '{}' also failed",
+                            info.id, fallback_id
+                        )
+                    })?;
+                continue;
             }
-            let updated = res.storage.page(page_id).await?;
-            verify_step_outputs(info, &updated)?;
-            Ok::<_, anyhow::Error>(())
+            return Err(err);
         }
-        .instrument(tracing::info_span!("step", engine = info.id))
-        .await?;
     }
     Ok(())
+}
+
+async fn run_step(
+    info: &EngineInfo,
+    res: &AppResources,
+    page_id: &str,
+    options: &PipelineRunOptions,
+) -> Result<()> {
+    async {
+        let doc = res.storage.page(page_id).await?;
+        let engine = res.registry.get(info.id, res).await?;
+        let patch = engine.run(&doc, res, options).await?;
+        if let Some(f) = patch.take() {
+            res.storage.update_page(page_id, f).await?;
+        }
+        let updated = res.storage.page(page_id).await?;
+        verify_step_outputs(info, &updated)?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .instrument(tracing::info_span!("step", engine = info.id))
+    .await
+}
+
+fn ocr_fallback_target(step_id: &str, err: &anyhow::Error) -> Option<&'static str> {
+    const DEFAULT_OCR: &str = "paddle-ocr-vl-1.5";
+
+    if !matches!(step_id, "glm-ocr" | "qwen3-vl" | "apple-vision-ocr") {
+        return None;
+    }
+    if !should_retry_ocr_with_default(err) {
+        return None;
+    }
+    Some(DEFAULT_OCR)
+}
+
+fn should_retry_ocr_with_default(err: &anyhow::Error) -> bool {
+    let message = err.to_string().to_ascii_lowercase();
+    [
+        "failed to download hf model file",
+        "shape mismatch in",
+        "unable to load model",
+        "failed to initialize llama.cpp runtime bindings",
+        "did not produce required artifacts: ocrtext",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 fn verify_step_outputs(info: &EngineInfo, doc: &Document) -> Result<()> {
@@ -405,6 +467,20 @@ fn verify_step_outputs(info: &EngineInfo, doc: &Document) -> Result<()> {
         .collect::<Vec<_>>();
 
     if missing.is_empty() {
+        if info.produces.contains(&Artifact::OcrText)
+            && !doc.text_blocks.is_empty()
+            && doc.text_blocks.iter().all(|block| {
+                block
+                    .text
+                    .as_deref()
+                    .is_none_or(|text| text.trim().is_empty())
+            })
+        {
+            bail!(
+                "step '{}' produced OCR output but every text block was empty",
+                info.id
+            );
+        }
         return Ok(());
     }
 
@@ -1931,6 +2007,17 @@ mod tests {
     }
 
     #[test]
+    fn ocr_readiness_accepts_empty_text_when_ocr_has_run() {
+        let mut doc = Document::default();
+        doc.text_blocks = vec![TextBlock {
+            text: Some(String::new()),
+            ..Default::default()
+        }];
+
+        assert!(Artifact::OcrText.ready(&doc));
+    }
+
+    #[test]
     fn verify_step_outputs_reports_missing_artifacts() {
         let info = EngineInfo {
             id: "llm",
@@ -1953,6 +2040,44 @@ mod tests {
             err.to_string()
                 .contains("did not produce required artifacts")
         );
+    }
+
+    #[test]
+    fn verify_step_outputs_rejects_all_empty_ocr_output() {
+        let info = EngineInfo {
+            id: "apple-vision-ocr",
+            name: "Apple Vision OCR",
+            needs: &[Artifact::TextBlocks],
+            produces: &[Artifact::OcrText],
+            load: |_res| Box::pin(async move { unreachable!("not used in test") }),
+        };
+        let doc = Document {
+            text_blocks: vec![TextBlock {
+                text: Some("   ".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let err = verify_step_outputs(&info, &doc).expect_err("all-empty OCR output");
+        assert!(err.to_string().contains("every text block was empty"));
+    }
+
+    #[test]
+    fn ocr_fallback_is_enabled_for_known_runtime_failures() {
+        let err = anyhow::anyhow!("shape mismatch in sub, lhs: [1, 256, 128, 128]");
+        assert_eq!(
+            ocr_fallback_target("glm-ocr", &err),
+            Some("paddle-ocr-vl-1.5")
+        );
+        assert_eq!(
+            ocr_fallback_target(
+                "apple-vision-ocr",
+                &anyhow::anyhow!("did not produce required artifacts: OcrText")
+            ),
+            Some("paddle-ocr-vl-1.5")
+        );
+        assert_eq!(ocr_fallback_target("paddle-ocr-vl-1.5", &err), None);
     }
 
     #[test]
