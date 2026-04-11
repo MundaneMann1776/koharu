@@ -2129,7 +2129,7 @@
       },
       "FontSource": {
         "type": "string",
-        "enum": ["system", "google"]
+        "enum": ["custom", "system", "google"]
       },
       "GoogleFontCatalogEntry": {
         "type": "object",

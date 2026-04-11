@@ -7,6 +7,7 @@
 export type FontSource = (typeof FontSource)[keyof typeof FontSource]
 
 export const FontSource = {
+  custom: 'custom',
   system: 'system',
   google: 'google',
 } as const

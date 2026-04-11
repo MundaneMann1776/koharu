@@ -29,6 +29,7 @@ pub struct GoogleFontCatalog {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum FontSource {
+    Custom,
     System,
     Google,
 }

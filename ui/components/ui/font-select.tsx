@@ -18,7 +18,7 @@ const MAX_VISIBLE = 10
 type FontOption = {
   familyName: string
   postScriptName: string
-  source: 'system' | 'google'
+  source: 'custom' | 'system' | 'google'
   category?: string | null
   cached: boolean
 }
@@ -43,7 +43,7 @@ function useGoogleFontPreview(
   isVisible: boolean,
 ) {
   const [state, setState] = useState<FontLoadState>(
-    source === 'system' ? 'ready' : 'idle',
+    source === 'system' || source === 'custom' ? 'ready' : 'idle',
   )
   const stateRef = useRef(state)
   stateRef.current = state
