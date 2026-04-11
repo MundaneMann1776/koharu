@@ -194,6 +194,11 @@ export function RenderControlsPanel() {
     if (!availableFonts) return []
     const recommended = new Set(catalog?.recommended ?? [])
     return [...availableFonts].sort((a, b) => {
+      // Custom fonts (from local directories) always appear first.
+      const aCustom = a.source === 'custom' ? 0 : 1
+      const bCustom = b.source === 'custom' ? 0 : 1
+      if (aCustom !== bCustom) return aCustom - bCustom
+      // Then recommended Google/system fonts.
       const aRec = recommended.has(a.familyName) ? 0 : 1
       const bRec = recommended.has(b.familyName) ? 0 : 1
       if (aRec !== bRec) return aRec - bRec
