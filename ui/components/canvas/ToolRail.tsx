@@ -10,6 +10,7 @@ import {
   Eraser,
   Undo2,
   Redo2,
+  Pipette,
 } from 'lucide-react'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -134,6 +135,7 @@ function BrushToolWithPopover({
     brushConfig: { size: brushSize, color: brushColor },
     setBrushConfig,
   } = usePreferencesStore()
+  const setMode = useEditorUiStore((s) => s.setMode)
   const currentDocumentId = useEditorUiStore((s) => s.currentDocumentId)
   const canUndo = useBrushHistoryStore((s) =>
     currentDocumentId ? s.canUndo(currentDocumentId) : false,
@@ -203,6 +205,22 @@ function BrushToolWithPopover({
                 inputTestId='brush-color-input'
                 pickButtonTestId='brush-color-pick'
               />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant='ghost'
+                    size='icon-sm'
+                    data-testid='brush-eyedropper-trigger'
+                    aria-label={t('toolbar.eyedropper')}
+                    onClick={() => setMode('eyedropper')}
+                  >
+                    <Pipette className='h-4 w-4' />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side='right' sideOffset={8}>
+                  {t('toolbar.eyedropper')}
+                </TooltipContent>
+              </Tooltip>
               <span className='text-muted-foreground text-xs'>
                 {brushColor}
               </span>

@@ -30,6 +30,7 @@ import { useMaskDrawing } from '@/hooks/useMaskDrawing'
 import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
 import { useBrushLayerDisplay } from '@/hooks/useBrushLayerDisplay'
 import { useBrushUndoRedo } from '@/hooks/useBrushUndoRedo'
+import { useEyedropperPick } from '@/hooks/useEyedropperPick'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import {
   resolvePinchMemoScaleRatio,
@@ -144,6 +145,25 @@ export function Workspace() {
   useBrushUndoRedo({
     enabled: mode === 'brush' || mode === 'eraser',
   })
+
+  // Eyedropper: sample pixel color from the visible image layer
+  const eyedropperSourceData = inpaintedData ?? imageData
+  const { handleClick: handleEyedropperClick } = useEyedropperPick({
+    imageData: eyedropperSourceData,
+    documentWidth: currentDocument?.width,
+    documentHeight: currentDocument?.height,
+    pointerToDocument,
+    enabled: mode === 'eyedropper',
+  })
+
+  // If the user switches documents while the eyedropper is active, fall back to brush.
+  useEffect(() => {
+    if (mode === 'eyedropper') {
+      useEditorUiStore.getState().setMode('brush')
+    }
+    // Only trigger when the document ID changes, not on every mode change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDocument?.id])
 
   useEffect(() => {
     if (currentDocument && autoFitEnabled) {
@@ -277,7 +297,9 @@ export function Workspace() {
     ? BRUSH_CURSOR
     : mode === 'block'
       ? 'cell'
-      : 'default'
+      : mode === 'eyedropper'
+        ? 'crosshair'
+        : 'default'
 
   const canvasDimensions = currentDocument
     ? {
@@ -321,6 +343,13 @@ export function Workspace() {
                       }}
                       onPointerDownCapture={handleCanvasPointerDownCapture}
                       onContextMenuCapture={handleCanvasContextMenu}
+                      onClick={
+                        mode === 'eyedropper'
+                          ? (e) => {
+                              void handleEyedropperClick(e)
+                            }
+                          : undefined
+                      }
                       {...blockDraftBindings}
                     >
                       <div className='absolute inset-0'>
