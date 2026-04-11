@@ -127,7 +127,12 @@ export const useEditorUiStore = create<EditorUiState>((set, get) => ({
   setMode: (mode) => {
     set({ mode })
 
-    if (mode === 'repairBrush' || mode === 'brush' || mode === 'eraser') {
+    if (
+      mode === 'repairBrush' ||
+      mode === 'brush' ||
+      mode === 'eraser' ||
+      mode === 'eyedropper'
+    ) {
       set({
         showRenderedImage: false,
         showInpaintedImage: true,
@@ -139,6 +144,12 @@ export const useEditorUiStore = create<EditorUiState>((set, get) => ({
         showTextBlocksOverlay: true,
         showSegmentationMask: true,
         showBrushLayer: false,
+      })
+    } else if (mode === 'eyedropper') {
+      set({
+        showSegmentationMask: false,
+        showBrushLayer: false,
+        showTextBlocksOverlay: false,
       })
     } else if (mode !== 'eraser') {
       set({ showSegmentationMask: false })

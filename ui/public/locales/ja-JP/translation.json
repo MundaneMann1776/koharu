@@ -198,7 +198,8 @@
     "brush": "ブラシ",
     "eraser": "消しゴム",
     "brushSize": "ブラシサイズ",
-    "brushColor": "ブラシカラー"
+    "brushColor": "ブラシカラー",
+    "eyedropper": "スポイト"
   },
   "toolRail": {
     "select": "選択",

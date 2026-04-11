@@ -198,7 +198,8 @@
     "brush": "画笔",
     "eraser": "橡皮擦",
     "brushSize": "笔刷大小",
-    "brushColor": "笔刷颜色"
+    "brushColor": "笔刷颜色",
+    "eyedropper": "取色器"
   },
   "toolRail": {
     "select": "选择",

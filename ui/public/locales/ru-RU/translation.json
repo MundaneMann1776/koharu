@@ -198,7 +198,8 @@
     "brush": "Кисть",
     "eraser": "Ластик",
     "brushSize": "Размер кисти",
-    "brushColor": "Цвет кисти"
+    "brushColor": "Цвет кисти",
+    "eyedropper": "Пипетка"
   },
   "toolRail": {
     "select": "Выделение",

@@ -76,7 +76,7 @@ export type TextBlock = {
   renderHeight?: number
 }
 
-export type ToolMode = 'select' | 'block' | 'brush' | 'repairBrush' | 'eraser'
+export type ToolMode = 'select' | 'block' | 'brush' | 'repairBrush' | 'eraser' | 'eyedropper'
 
 export type InpaintRegion = {
   x: number

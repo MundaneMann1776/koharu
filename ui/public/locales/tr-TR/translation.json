@@ -198,7 +198,8 @@
     "brush": "Fırça",
     "eraser": "Silgi",
     "brushSize": "Fırça boyutu",
-    "brushColor": "Fırça rengi"
+    "brushColor": "Fırça rengi",
+    "eyedropper": "Renk damlalığı"
   },
   "toolRail": {
     "select": "Seç",

@@ -198,7 +198,8 @@
     "brush": "Pincel",
     "eraser": "Borracha",
     "brushSize": "Tamanho do pincel",
-    "brushColor": "Cor do pincel"
+    "brushColor": "Cor do pincel",
+    "eyedropper": "Conta-gotas"
   },
   "toolRail": {
     "select": "Selecionar",

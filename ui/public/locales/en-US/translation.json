@@ -200,7 +200,8 @@
     "brush": "Brush",
     "eraser": "Eraser",
     "brushSize": "Brush size",
-    "brushColor": "Brush color"
+    "brushColor": "Brush color",
+    "eyedropper": "Eyedropper"
   },
   "toolRail": {
     "select": "Select",

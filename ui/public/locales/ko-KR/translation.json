@@ -198,7 +198,8 @@
     "brush": "브러시",
     "eraser": "지우개",
     "brushSize": "브러시 크기",
-    "brushColor": "브러시 색상"
+    "brushColor": "브러시 색상",
+    "eyedropper": "스포이트"
   },
   "toolRail": {
     "select": "선택",
