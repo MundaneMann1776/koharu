@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 use anyhow::Context;
 pub use fontdb::FaceInfo;
@@ -91,6 +91,8 @@ pub(crate) fn select_font(cluster: &str, fonts: &[&Font]) -> usize {
 pub struct FontBook {
     database: Database,
     cache: HashMap<ID, Font>,
+    /// IDs of faces loaded from a custom font directory (not system fonts).
+    custom_ids: HashSet<ID>,
 }
 
 impl FontBook {
@@ -102,12 +104,50 @@ impl FontBook {
         Self {
             database,
             cache: HashMap::new(),
+            custom_ids: HashSet::new(),
         }
     }
 
     /// Returns all available font faces.
     pub fn all_families(&self) -> Vec<FaceInfo> {
         self.database.faces().cloned().collect()
+    }
+
+    /// Returns only the font faces loaded from a custom directory.
+    pub fn custom_families(&self) -> Vec<FaceInfo> {
+        self.database
+            .faces()
+            .filter(|f| self.custom_ids.contains(&f.id))
+            .cloned()
+            .collect()
+    }
+
+    /// Loads all TTF/OTF font files from `dir`, tracking them as custom fonts.
+    /// Silently skips unreadable files and non-font entries.
+    /// Returns the number of faces successfully registered.
+    pub fn load_font_dir(&mut self, dir: &std::path::Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        let mut count = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(ext) = path.extension() else {
+                continue;
+            };
+            let ext_lower = ext.to_string_lossy().to_lowercase();
+            if ext_lower != "ttf" && ext_lower != "otf" {
+                continue;
+            }
+            let ids = self
+                .database
+                .load_font_source(fontdb::Source::File(path));
+            for id in &ids {
+                self.custom_ids.insert(*id);
+            }
+            count += ids.len();
+        }
+        count
     }
 
     /// Loads a font by PostScript name.
