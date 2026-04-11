@@ -173,7 +173,8 @@ impl Renderer {
                     .first()
                     .map(|(family, _)| family.clone())
                     .unwrap_or_else(|| face.post_script_name.clone());
-                if seen.insert(family_name.clone()) {
+                let key = family_name.trim().to_lowercase();
+                if seen.insert(key) {
                     Some(FontFaceInfo {
                         family_name,
                         post_script_name: face.post_script_name,
@@ -190,7 +191,7 @@ impl Renderer {
         // Google Fonts (from catalog)
         let catalog = self.google_fonts.catalog();
         for entry in &catalog.fonts {
-            if seen.insert(entry.family.clone()) {
+            if seen.insert(entry.family.trim().to_lowercase()) {
                 fonts.push(FontFaceInfo {
                     family_name: entry.family.clone(),
                     post_script_name: entry.family.clone(),
