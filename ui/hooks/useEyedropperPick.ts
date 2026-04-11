@@ -35,12 +35,15 @@ export function useEyedropperPick({
   // Keyed by the imageData reference — invalidated automatically when imageData changes.
   const bitmapRef = useRef<ImageBitmap | null>(null)
   const lastImageDataRef = useRef<Uint8Array | undefined>(undefined)
+  // Guard against concurrent bitmap creation from rapid clicks.
+  const decodingRef = useRef(false)
 
   // Invalidate the cached bitmap when imageData changes.
   useEffect(() => {
     if (lastImageDataRef.current !== imageData) {
       bitmapRef.current?.close()
       bitmapRef.current = null
+      decodingRef.current = false
       lastImageDataRef.current = imageData
     }
   }, [imageData])
@@ -71,12 +74,17 @@ export function useEyedropperPick({
       const py = Math.floor(Math.max(0, Math.min(pos.y, documentHeight - 1)))
 
       // Get or create the cached ImageBitmap.
+      // Guard prevents concurrent decoding from rapid double-clicks.
       if (!bitmapRef.current) {
+        if (decodingRef.current) return
+        decodingRef.current = true
         try {
           bitmapRef.current = await convertToImageBitmap(imageData)
         } catch {
+          decodingRef.current = false
           return
         }
+        decodingRef.current = false
       }
 
       const bitmap = bitmapRef.current

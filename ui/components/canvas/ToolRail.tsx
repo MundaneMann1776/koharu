@@ -1,6 +1,7 @@
 'use client'
 
 import type { ComponentType } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   MousePointer,
@@ -88,7 +89,8 @@ export function ToolRail() {
                 key={item.value}
                 item={item}
                 label={label}
-                isActive={item.value === mode}
+                // Eyedropper is a sub-mode of brush — keep brush button highlighted
+                isActive={mode === 'brush' || mode === 'eyedropper'}
                 onSelect={() => setMode(item.value)}
               />
             )
@@ -136,6 +138,7 @@ function BrushToolWithPopover({
     setBrushConfig,
   } = usePreferencesStore()
   const setMode = useEditorUiStore((s) => s.setMode)
+  const [popoverOpen, setPopoverOpen] = useState(false)
   const currentDocumentId = useEditorUiStore((s) => s.currentDocumentId)
   const canUndo = useBrushHistoryStore((s) =>
     currentDocumentId ? s.canUndo(currentDocumentId) : false,
@@ -145,8 +148,13 @@ function BrushToolWithPopover({
   )
   const { t } = useTranslation()
 
+  const activateEyedropper = () => {
+    setPopoverOpen(false)
+    setMode('eyedropper')
+  }
+
   return (
-    <Popover>
+    <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
@@ -204,7 +212,7 @@ function BrushToolWithPopover({
                 swatchTestId='brush-color-swatch'
                 inputTestId='brush-color-input'
                 pickButtonTestId='brush-color-pick'
-                onPickFromCanvas={() => setMode('eyedropper')}
+                onPickFromCanvas={activateEyedropper}
               />
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -213,7 +221,7 @@ function BrushToolWithPopover({
                     size='icon-sm'
                     data-testid='brush-eyedropper-trigger'
                     aria-label={t('toolbar.eyedropper')}
-                    onClick={() => setMode('eyedropper')}
+                    onClick={activateEyedropper}
                   >
                     <Pipette className='h-4 w-4' />
                   </Button>
