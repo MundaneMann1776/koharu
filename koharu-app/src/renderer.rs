@@ -253,6 +253,16 @@ impl Renderer {
         Ok(fonts)
     }
 
+    /// Returns the raw font file bytes for a custom (locally-loaded) font
+    /// identified by its PostScript name. Returns `None` when not found.
+    pub fn read_custom_font(&self, post_script_name: &str) -> Result<Option<Vec<u8>>> {
+        let fontbook = self
+            .fontbook
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Failed to lock fontbook"))?;
+        Ok(fontbook.read_custom_font_data(post_script_name))
+    }
+
     /// Render text blocks and optionally compose the full rendered image.
     /// Returns an optional BlobRef for the full rendered composite.
     /// Text block `rendered` fields are updated in-place with BlobRefs to per-block images.

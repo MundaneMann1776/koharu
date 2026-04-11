@@ -39,42 +39,60 @@ type FontSelectProps = {
 
 function useGoogleFontPreview(
   family: string,
+  postScriptName: string,
   source: string,
   isVisible: boolean,
 ) {
   const [state, setState] = useState<FontLoadState>(
-    source === 'system' || source === 'custom' ? 'ready' : 'idle',
+    source === 'system' ? 'ready' : 'idle',
   )
   const stateRef = useRef(state)
   stateRef.current = state
 
   useEffect(() => {
-    if (source !== 'google' || !isVisible || stateRef.current !== 'idle') return
+    if (!isVisible || stateRef.current !== 'idle') return
+    if (source !== 'google' && source !== 'custom') return
 
     let cancelled = false
     setState('loading')
 
-    fetchGoogleFont(encodeURIComponent(family))
-      .then(() => {
-        if (cancelled) return
-        const url = `/api/v1/fonts/google/${encodeURIComponent(family)}/file`
-        const face = new FontFace(family, `url(${url})`)
-        return face.load()
-      })
-      .then((face) => {
-        if (cancelled || !face) return
-        document.fonts.add(face)
-        setState('ready')
-      })
-      .catch(() => {
-        if (!cancelled) setState('error')
-      })
+    if (source === 'google') {
+      fetchGoogleFont(encodeURIComponent(family))
+        .then(() => {
+          if (cancelled) return
+          const url = `/api/v1/fonts/google/${encodeURIComponent(family)}/file`
+          const face = new FontFace(family, `url(${url})`)
+          return face.load()
+        })
+        .then((face) => {
+          if (cancelled || !face) return
+          document.fonts.add(face)
+          setState('ready')
+        })
+        .catch(() => {
+          if (!cancelled) setState('error')
+        })
+    } else {
+      // Custom font — served directly from the local backend.
+      const url = `/api/v1/fonts/custom/${encodeURIComponent(postScriptName)}/file`
+      const face = new FontFace(family, `url(${url})`)
+      face
+        .load()
+        .then((loaded) => {
+          if (cancelled) return
+          document.fonts.add(loaded)
+          setState('ready')
+        })
+        .catch(() => {
+          if (!cancelled) setState('error')
+        })
+    }
 
     return () => {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [family, source, isVisible])
+  }, [family, postScriptName, source, isVisible])
 
   return state
 }
@@ -94,6 +112,7 @@ function FontRow({
 }) {
   const loadState = useGoogleFontPreview(
     font.familyName,
+    font.postScriptName,
     font.source,
     isVisible,
   )
@@ -115,9 +134,13 @@ function FontRow({
         {selected && <CheckIcon className='size-3' />}
       </span>
       <span className='truncate'>{font.familyName}</span>
-      {font.source === 'google' && (
+      {(font.source === 'google' || font.source === 'custom') && (
         <span className='text-muted-foreground ml-auto shrink-0 text-[9px]'>
-          {loadState === 'loading' ? '...' : 'G'}
+          {loadState === 'loading'
+            ? '...'
+            : font.source === 'custom'
+              ? 'C'
+              : 'G'}
         </span>
       )}
     </button>
@@ -145,7 +168,10 @@ export function FontSelect({
     let result = options
     if (categoryFilter) {
       result = result.filter(
-        (f) => f.source === 'system' || f.category === categoryFilter,
+        (f) =>
+          f.source === 'system' ||
+          f.source === 'custom' ||
+          f.category === categoryFilter,
       )
     }
     if (search) {

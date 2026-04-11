@@ -68,6 +68,7 @@ pub fn api() -> (axum::Router<ApiState>, utoipa::openapi::OpenApi) {
         .routes(routes!(list_fonts))
         .routes(routes!(get_google_fonts_catalog))
         .routes(routes!(fetch_google_font, get_google_font_file))
+        .routes(routes!(get_custom_font_file))
         .routes(routes!(get_config, update_config))
         .routes(routes!(get_engine_catalog))
         .split_for_parts()
@@ -390,6 +391,46 @@ async fn get_google_font_file(
             ApiError::new(
                 StatusCode::NOT_FOUND,
                 format!("font not cached: {family}. Call fetch first."),
+            )
+        })?;
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, HeaderValue::from_static("font/ttf"))
+        .body(Body::from(data))
+        .unwrap())
+}
+
+#[utoipa::path(
+    get,
+    path = "/fonts/custom/{postScriptName}/file",
+    operation_id = "getCustomFontFile",
+    tag = "system",
+    params(
+        ("postScriptName" = String, Path, description = "PostScript name of the custom font"),
+    ),
+    responses(
+        (status = 200, description = "Font file bytes", content_type = "font/ttf"),
+        (status = 404, body = ApiError),
+        (status = 503, body = ApiError),
+    ),
+)]
+async fn get_custom_font_file(
+    State(state): State<ApiState>,
+    Path(post_script_name): Path<String>,
+) -> Result<Response, ApiError> {
+    let resources = state.resources()?;
+    let renderer = engine::get_renderer(&resources)
+        .await
+        .map_err(ApiError::from)?;
+
+    let data = renderer
+        .read_custom_font(&post_script_name)
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("custom font not found: {post_script_name}"),
             )
         })?;
 

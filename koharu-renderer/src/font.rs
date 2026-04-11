@@ -150,6 +150,21 @@ impl FontBook {
         count
     }
 
+    /// Returns the raw font file bytes for a custom font identified by PostScript name.
+    /// Returns `None` if the name is not found among custom fonts.
+    pub fn read_custom_font_data(&self, post_script_name: &str) -> Option<Vec<u8>> {
+        let id = self
+            .database
+            .faces()
+            .find_map(|face| {
+                (self.custom_ids.contains(&face.id)
+                    && face.post_script_name == post_script_name)
+                    .then_some(face.id)
+            })?;
+        self.database
+            .with_face_data(id, |data, _| data.to_vec())
+    }
+
     /// Loads a font by PostScript name.
     pub fn query(&mut self, post_script_name: &str) -> anyhow::Result<Font> {
         let Some(id) = self
