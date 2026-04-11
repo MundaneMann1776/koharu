@@ -20,12 +20,10 @@ type ColorPickerProps = {
   swatchTestId?: string
   inputTestId?: string
   pickButtonTestId?: string
-}
-
-type EyeDropperWindow = Window & {
-  EyeDropper?: new () => {
-    open: () => Promise<{ sRGBHex: string }>
-  }
+  /** Called when the user clicks the "Pick from canvas" button. The caller is
+   *  responsible for activating eyedropper mode; the button is only shown when
+   *  this prop is provided. */
+  onPickFromCanvas?: () => void
 }
 
 const normalizeHex = (value: string) => {
@@ -43,6 +41,7 @@ export function ColorPicker({
   swatchTestId,
   inputTestId,
   pickButtonTestId,
+  onPickFromCanvas,
 }: ColorPickerProps) {
   const [localColor, setLocalColor] = useState(value)
   const dragging = useRef(false)
@@ -58,27 +57,6 @@ export function ColorPicker({
       onChange(localColor)
     }
   }, [localColor, onChange])
-
-  const canUseEyeDropper =
-    typeof window !== 'undefined' &&
-    typeof (window as EyeDropperWindow).EyeDropper === 'function'
-
-  const handlePickFromScreen = async () => {
-    const EyeDropperCtor = (window as EyeDropperWindow).EyeDropper
-    if (!EyeDropperCtor) return
-
-    try {
-      const eyeDropper = new EyeDropperCtor()
-      const result = await eyeDropper.open()
-      const color = normalizeHex(result.sRGBHex)
-      setLocalColor(color)
-      onChange(color)
-    } catch (error) {
-      const maybeDomException = error as DOMException | undefined
-      if (maybeDomException?.name === 'AbortError') return
-      console.error(error)
-    }
-  }
 
   return (
     <Popover>
@@ -128,7 +106,7 @@ export function ColorPicker({
               }}
             />
 
-            {canUseEyeDropper && (
+            {onPickFromCanvas && (
               <Button
                 type='button'
                 size='sm'
@@ -136,9 +114,7 @@ export function ColorPicker({
                 data-testid={pickButtonTestId}
                 disabled={disabled}
                 className='h-8 shrink-0 px-2 text-xs'
-                onClick={() => {
-                  void handlePickFromScreen()
-                }}
+                onClick={onPickFromCanvas}
               >
                 Pick
               </Button>

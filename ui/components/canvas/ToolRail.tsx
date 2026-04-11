@@ -204,6 +204,7 @@ function BrushToolWithPopover({
                 swatchTestId='brush-color-swatch'
                 inputTestId='brush-color-input'
                 pickButtonTestId='brush-color-pick'
+                onPickFromCanvas={() => setMode('eyedropper')}
               />
               <Tooltip>
                 <TooltipTrigger asChild>
