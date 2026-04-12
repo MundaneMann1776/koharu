@@ -282,7 +282,12 @@ export function Workspace() {
   const handleCanvasPointerDownCapture = (
     event: React.PointerEvent<HTMLDivElement>,
   ) => {
-    if (mode !== 'block' && event.target === event.currentTarget) {
+    if (
+      mode !== 'block' &&
+      !(event.target as HTMLElement).closest(
+        '[data-testid^="workspace-text-block-"]',
+      )
+    ) {
       clearSelection()
     }
   }
