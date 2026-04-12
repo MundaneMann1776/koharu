@@ -173,29 +173,7 @@ impl Renderer {
             if family.starts_with('.') || post_script.starts_with('.') {
                 return false;
             }
-            let family_lower = family.to_lowercase();
-            let post_lower = post_script.to_lowercase();
-            let hidden_markers = [
-                "lastresort",
-                "apple color emoji ui",
-                "applesymbols",
-                "noto sans",
-                "noto serif",
-                "noto nastaliq urdu",
-                "stix",
-                "waseem",
-                "wingdings 2",
-                "wingdings 3",
-                "new york large",
-                "new york medium",
-                "new york small",
-                "sf compact",
-                "sf mono",
-                "sf pro",
-            ];
-            !hidden_markers
-                .iter()
-                .any(|marker| family_lower.contains(marker) || post_lower.contains(marker))
+            !is_blocked_font_name(family) && !is_blocked_font_name(post_script)
         };
 
         // Extract the primary family name from a face, falling back to PostScript name.
@@ -528,9 +506,15 @@ impl Renderer {
         // resolved from the disk cache even when a previously-loaded font
         // appears later in the list.
         for candidate in &style.font_families {
+            if is_blocked_font_name(candidate) {
+                continue;
+            }
             // Already loaded in FontBook (system font or previously loaded Google Font)?
             let faces = fontbook.all_families();
             if let Some(psn) = face_post_script_name(&faces, candidate) {
+                if is_blocked_font_name(&psn) {
+                    continue;
+                }
                 return fontbook.query(&psn);
             }
 
@@ -539,6 +523,24 @@ impl Renderer {
                 let font = fontbook.load_from_bytes(data)?;
                 return Ok(font);
             }
+        }
+
+        // Fallback: pick the first user-visible system face instead of
+        // hard-failing when all requested candidates are blocked.
+        if let Some(psn) = fontbook
+            .all_families()
+            .into_iter()
+            .find_map(|face| {
+                let family = face
+                    .families
+                    .first()
+                    .map(|(family, _)| family.clone())
+                    .unwrap_or_else(|| face.post_script_name.clone());
+                (!is_blocked_font_name(&family) && !is_blocked_font_name(&face.post_script_name))
+                    .then_some(face.post_script_name)
+            })
+        {
+            return fontbook.query(&psn);
         }
 
         Err(anyhow::anyhow!(
@@ -719,17 +721,51 @@ fn load_symbol_fallbacks(fontbook: &mut FontBook) -> Vec<Font> {
 }
 
 fn face_post_script_name(faces: &[FaceInfo], candidate: &str) -> Option<String> {
+    if is_blocked_font_name(candidate) {
+        return None;
+    }
+
     faces
         .iter()
         .find(|face| {
-            face.post_script_name == candidate
-                || face
-                    .families
-                    .iter()
-                    .any(|(family, _)| family.as_str() == candidate)
+            !is_blocked_font_name(&face.post_script_name)
+                && face.families.iter().all(|(family, _)| !is_blocked_font_name(family))
+                && (face.post_script_name == candidate
+                    || face
+                        .families
+                        .iter()
+                        .any(|(family, _)| family.as_str() == candidate))
         })
         .map(|face| face.post_script_name.clone())
         .filter(|post_script_name| !post_script_name.is_empty())
+}
+
+fn is_blocked_font_name(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    if lower.is_empty() {
+        return true;
+    }
+
+    let blocked_markers = [
+        "lastresort",
+        "apple color emoji ui",
+        "applesymbols",
+        "noto sans",
+        "noto serif",
+        "noto nastaliq urdu",
+        "stix",
+        "waseem",
+        "wingdings 2",
+        "wingdings 3",
+        "new york large",
+        "new york medium",
+        "new york small",
+        "sf compact",
+        "sf mono",
+        "sf pro",
+    ];
+
+    blocked_markers.iter().any(|marker| lower.contains(marker))
 }
 
 #[allow(dead_code)]
