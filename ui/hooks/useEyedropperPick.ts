@@ -64,7 +64,13 @@ export function useEyedropperPick({
 
   const handleClick = useCallback(
     async (event: React.MouseEvent<HTMLDivElement>) => {
-      if (!enabled || !imageData || !documentWidth || !documentHeight) return
+      if (!enabled) return
+
+      if (!imageData || !documentWidth || !documentHeight) {
+        useEditorUiStore.getState().showError('Image not ready — try again in a moment')
+        useEditorUiStore.getState().setMode('brush')
+        return
+      }
 
       const pos = pointerToDocument(event)
       if (!pos) return
@@ -80,8 +86,11 @@ export function useEyedropperPick({
         decodingRef.current = true
         try {
           bitmapRef.current = await convertToImageBitmap(imageData)
-        } catch {
+        } catch (err) {
           decodingRef.current = false
+          useEditorUiStore.getState().showError('Failed to decode image for color picking')
+          useEditorUiStore.getState().setMode('brush')
+          console.error('[eyedropper] bitmap decode failed:', err)
           return
         }
         decodingRef.current = false
@@ -93,7 +102,11 @@ export function useEyedropperPick({
       // This avoids allocating a full-resolution canvas on every click.
       const offscreen = new OffscreenCanvas(1, 1)
       const ctx = offscreen.getContext('2d')
-      if (!ctx) return
+      if (!ctx) {
+        useEditorUiStore.getState().showError('Color picking is not supported in this environment')
+        useEditorUiStore.getState().setMode('brush')
+        return
+      }
 
       ctx.drawImage(bitmap, px, py, 1, 1, 0, 0, 1, 1)
       const pixel = ctx.getImageData(0, 0, 1, 1)
