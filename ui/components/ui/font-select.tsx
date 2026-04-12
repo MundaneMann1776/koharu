@@ -25,6 +25,78 @@ type FontOption = {
 
 type FontLoadState = 'idle' | 'loading' | 'ready' | 'error'
 
+const MAX_CONCURRENT_FONT_LOADS = 3
+const fontLoadStateCache = new Map<string, FontLoadState>()
+const fontLoadPromises = new Map<string, Promise<void>>()
+const fontLoadQueue: Array<() => void> = []
+let activeFontLoads = 0
+
+const fontKey = (source: string, family: string, postScriptName: string) =>
+  source === 'custom' ? `${source}:${postScriptName}` : `${source}:${family}`
+
+const scheduleFontLoad = (task: () => Promise<void>): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const start = () => {
+      activeFontLoads += 1
+      task()
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          activeFontLoads -= 1
+          const next = fontLoadQueue.shift()
+          if (next) next()
+        })
+    }
+
+    if (activeFontLoads < MAX_CONCURRENT_FONT_LOADS) {
+      start()
+      return
+    }
+
+    fontLoadQueue.push(start)
+  })
+
+const loadFontPreview = (
+  family: string,
+  postScriptName: string,
+  source: string,
+): Promise<void> => {
+  if (source === 'system') return Promise.resolve()
+  if (source !== 'google' && source !== 'custom') return Promise.resolve()
+
+  const key = fontKey(source, family, postScriptName)
+  const existing = fontLoadPromises.get(key)
+  if (existing) return existing
+  if (fontLoadStateCache.get(key) === 'ready') return Promise.resolve()
+
+  fontLoadStateCache.set(key, 'loading')
+
+  const promise = scheduleFontLoad(async () => {
+    if (source === 'google') {
+      await fetchGoogleFont(encodeURIComponent(family))
+    }
+
+    const url =
+      source === 'google'
+        ? `/api/v1/fonts/google/${encodeURIComponent(family)}/file`
+        : `/api/v1/fonts/custom/${encodeURIComponent(postScriptName)}/file`
+    const face = new FontFace(family, `url(${url})`)
+    const loaded = await face.load()
+    document.fonts.add(loaded)
+    fontLoadStateCache.set(key, 'ready')
+  })
+    .catch((error) => {
+      fontLoadStateCache.set(key, 'error')
+      throw error
+    })
+    .finally(() => {
+      fontLoadPromises.delete(key)
+    })
+
+  fontLoadPromises.set(key, promise)
+  return promise
+}
+
 type FontSelectProps = {
   value: string
   options: FontOption[]
@@ -43,56 +115,39 @@ function useGoogleFontPreview(
   source: string,
   isVisible: boolean,
 ) {
-  const [state, setState] = useState<FontLoadState>(
-    source === 'system' ? 'ready' : 'idle',
-  )
-  const stateRef = useRef(state)
-  stateRef.current = state
+  const key = fontKey(source, family, postScriptName)
+  const [state, setState] = useState<FontLoadState>(() => {
+    if (source === 'system') return 'ready'
+    return fontLoadStateCache.get(key) ?? 'idle'
+  })
 
   useEffect(() => {
-    if (!isVisible || stateRef.current !== 'idle') return
-    if (source !== 'google' && source !== 'custom') return
+    if (source === 'system') {
+      setState('ready')
+      return
+    }
+    setState(fontLoadStateCache.get(key) ?? 'idle')
+  }, [key, source])
+
+  useEffect(() => {
+    if (!isVisible || state !== 'idle') return
+    if (source === 'system') return
 
     let cancelled = false
     setState('loading')
 
-    if (source === 'google') {
-      fetchGoogleFont(encodeURIComponent(family))
-        .then(() => {
-          if (cancelled) return
-          const url = `/api/v1/fonts/google/${encodeURIComponent(family)}/file`
-          const face = new FontFace(family, `url(${url})`)
-          return face.load()
-        })
-        .then((face) => {
-          if (cancelled || !face) return
-          document.fonts.add(face)
-          setState('ready')
-        })
-        .catch(() => {
-          if (!cancelled) setState('error')
-        })
-    } else {
-      // Custom font — served directly from the local backend.
-      const url = `/api/v1/fonts/custom/${encodeURIComponent(postScriptName)}/file`
-      const face = new FontFace(family, `url(${url})`)
-      face
-        .load()
-        .then((loaded) => {
-          if (cancelled) return
-          document.fonts.add(loaded)
-          setState('ready')
-        })
-        .catch(() => {
-          if (!cancelled) setState('error')
-        })
-    }
+    loadFontPreview(family, postScriptName, source)
+      .then(() => {
+        if (!cancelled) setState('ready')
+      })
+      .catch(() => {
+        if (!cancelled) setState('error')
+      })
 
     return () => {
       cancelled = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [family, postScriptName, source, isVisible])
+  }, [family, postScriptName, source, isVisible, state])
 
   return state
 }
@@ -203,6 +258,46 @@ export function FontSelect({
   )?.familyName
 
   const listHeight = Math.min(filtered.length, MAX_VISIBLE) * ITEM_HEIGHT
+
+  const preloadFonts = useMemo(() => {
+    if (!open) return []
+
+    const selected = filtered.find(
+      (font) => font.postScriptName === value || font.familyName === value,
+    )
+    const firstVisible = filtered.slice(0, MAX_VISIBLE + 2)
+    return selected
+      ? [selected, ...firstVisible.filter((font) => font !== selected)]
+      : firstVisible
+  }, [filtered, open, value])
+
+  useEffect(() => {
+    if (!open) return
+
+    preloadFonts.forEach((font, index) => {
+      const run = () => {
+        void loadFontPreview(
+          font.familyName,
+          font.postScriptName,
+          font.source,
+        ).catch(() => undefined)
+      }
+
+      if (index < 3) {
+        run()
+        return
+      }
+
+      if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+        ;(
+          window as Window & { requestIdleCallback: (cb: () => void) => void }
+        ).requestIdleCallback(run)
+        return
+      }
+
+      setTimeout(run, 0)
+    })
+  }, [open, preloadFonts])
 
   return (
     <Popover

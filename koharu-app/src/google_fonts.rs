@@ -16,6 +16,138 @@ const RECOMMENDED_FAMILIES: &[&str] = &[
     "Pangolin",
 ];
 
+const ALLOWED_SUBSETS: &[&str] = &[
+    "latin",
+    "latin-ext",
+    "vietnamese",
+    "cyrillic",
+    "cyrillic-ext",
+    "greek",
+    "greek-ext",
+    "japanese",
+    "korean",
+    "math",
+    "symbols",
+    "symbols2",
+];
+
+const CURATED_FAMILIES: &[&str] = &[
+    "Roboto",
+    "Roboto Condensed",
+    "Roboto Mono",
+    "Open Sans",
+    "Lato",
+    "Montserrat",
+    "Poppins",
+    "Nunito",
+    "Nunito Sans",
+    "Inter",
+    "Work Sans",
+    "Source Sans 3",
+    "Source Serif 4",
+    "Merriweather",
+    "Merriweather Sans",
+    "PT Sans",
+    "PT Serif",
+    "IBM Plex Sans",
+    "IBM Plex Serif",
+    "IBM Plex Mono",
+    "Noto Sans",
+    "Noto Serif",
+    "Noto Sans JP",
+    "Noto Serif JP",
+    "Noto Sans KR",
+    "Noto Serif KR",
+    "M PLUS 1",
+    "M PLUS 1p",
+    "M PLUS Rounded 1c",
+    "Kosugi",
+    "Kosugi Maru",
+    "BIZ UDPGothic",
+    "BIZ UDMincho",
+    "Zen Kaku Gothic New",
+    "Zen Maru Gothic",
+    "Zen Old Mincho",
+    "Shippori Mincho",
+    "Yuji Syuku",
+    "DotGothic16",
+    "Hina Mincho",
+    "Nanum Gothic",
+    "Nanum Myeongjo",
+    "Stylish",
+    "Gamja Flower",
+    "Do Hyeon",
+    "Gowun Dodum",
+    "Gowun Batang",
+    "Black Han Sans",
+    "Jua",
+    "Comic Neue",
+    "Bangers",
+    "Patrick Hand",
+    "Caveat",
+    "Pangolin",
+    "Kalam",
+    "Permanent Marker",
+    "Indie Flower",
+    "Architects Daughter",
+    "Gloria Hallelujah",
+    "Shadows Into Light",
+    "Shadows Into Light Two",
+    "Schoolbell",
+    "Coming Soon",
+    "Handlee",
+    "Chewy",
+    "Luckiest Guy",
+    "Baloo 2",
+    "Fredoka",
+    "Bebas Neue",
+    "Oswald",
+    "Raleway",
+    "Quicksand",
+    "Manrope",
+    "Barlow",
+    "Barlow Condensed",
+    "Rubik",
+    "Mukta",
+    "Ubuntu",
+    "Fira Sans",
+    "Inconsolata",
+    "JetBrains Mono",
+    "Fira Code",
+    "DM Sans",
+    "DM Serif Text",
+    "Plus Jakarta Sans",
+    "Cabin",
+    "Arimo",
+    "Tinos",
+    "Playfair Display",
+    "Lora",
+    "Crimson Text",
+    "Libre Baskerville",
+    "EB Garamond",
+    "Cardo",
+    "Cormorant Garamond",
+    "Space Grotesk",
+    "Outfit",
+    "Sora",
+    "Heebo",
+    "Titillium Web",
+];
+
+fn has_only_allowed_subsets(entry: &GoogleFontEntry) -> bool {
+    !entry.subsets.is_empty()
+        && entry
+            .subsets
+            .iter()
+            .all(|subset| ALLOWED_SUBSETS.contains(&subset.as_str()))
+}
+
+fn is_curated_family(family: &str) -> bool {
+    CURATED_FAMILIES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(family))
+}
+
 /// On-demand Google Fonts service with persistent disk caching.
 pub struct GoogleFontService {
     catalog: GoogleFontCatalog,
@@ -64,6 +196,12 @@ impl GoogleFontService {
     /// Returns the list of recommended font family names.
     pub fn recommended_families(&self) -> &[&str] {
         RECOMMENDED_FAMILIES
+    }
+
+    /// Restricts the browser list to a curated set of practical fonts and
+    /// supported subsets (Latin/European + Korean/Japanese).
+    pub fn is_entry_browsable(&self, entry: &GoogleFontEntry) -> bool {
+        has_only_allowed_subsets(entry) && is_curated_family(&entry.family)
     }
 
     /// Checks if a family has been cached to disk.

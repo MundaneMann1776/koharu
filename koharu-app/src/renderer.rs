@@ -230,6 +230,9 @@ impl Renderer {
             .fonts
             .iter()
             .filter_map(|entry| {
+                if !self.google_fonts.is_entry_browsable(entry) {
+                    return None;
+                }
                 if seen.insert(entry.family.trim().to_lowercase()) {
                     Some(FontFaceInfo {
                         family_name: entry.family.clone(),
