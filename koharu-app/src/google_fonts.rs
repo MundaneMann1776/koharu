@@ -8,15 +8,20 @@ use tracing::debug;
 
 const CATALOG_JSON: &str = include_str!("../data/google-fonts-catalog.json");
 
+/// Fonts shown at the top of the selector as quick picks.
 const RECOMMENDED_FAMILIES: &[&str] = &[
-    "Comic Neue",
     "Bangers",
+    "Comic Neue",
+    "Bebas Neue",
     "Patrick Hand",
     "Caveat",
-    "Pangolin",
 ];
 
-const ALLOWED_SUBSETS: &[&str] = &[
+/// Subsets considered "useful" — a font passes if it has AT LEAST ONE of these.
+/// Using any() rather than all() so that popular fonts like Roboto and Open Sans
+/// (which Google has since expanded with math/symbols/devanagari subsets) are
+/// not silently excluded.
+const USEFUL_SUBSETS: &[&str] = &[
     "latin",
     "latin-ext",
     "vietnamese",
@@ -28,10 +33,39 @@ const ALLOWED_SUBSETS: &[&str] = &[
     "korean",
 ];
 
+/// Curated for manga/manhwa scanlation. Organised by role so it's easy to
+/// review at a glance. Coding fonts, academic serifs, and niche decorative
+/// faces have been removed.
 const CURATED_FAMILIES: &[&str] = &[
+    // ── Dialogue & Handwritten ──────────────────────────────────────────────
+    // These are the fonts scanlation groups reach for first.
+    "Comic Neue",           // Primary dialogue font (Wild Words alternative)
+    "Patrick Hand",         // Clean, legible dialogue
+    "Caveat",               // Handwritten action / inner-monologue text
+    "Pangolin",             // Slightly quirky dialogue alternative
+    "Kalam",                // Handwritten, natural feel
+    "Indie Flower",         // Loose handwritten
+    "Architects Daughter",  // Popular in webtoons for casual dialogue
+    "Shadows Into Light Two", // Expressive handwritten
+    "Handlee",              // Clean informal script
+
+    // ── Impact, SFX & Chapter Titles ────────────────────────────────────────
+    "Bangers",              // #1 SFX font — used by nearly every group
+    "Bebas Neue",           // Condensed all-caps, chapter headers & titles
+    "Anton",                // Heavy bold, common for impact text in manhwa
+    "Russo One",            // Rounded bold titles
+    "Black Ops One",        // Action / military manhwa titles
+    "Oswald",               // Condensed, versatile title font
+    "Barlow Condensed",     // Compact titles that need to fit tight spaces
+    "Lilita One",           // Bold rounded display, popular in manhwa covers
+    "Righteous",            // Clean display, good for fantasy/action titles
+    "Cinzel",               // Roman-carved look, perfect for isekai/fantasy
+
+    // ── General Purpose (clean, modern) ────────────────────────────────────
+    // Used for translated narration boxes, UI-style text, and when a neutral
+    // readable face is needed.
     "Roboto",
     "Roboto Condensed",
-    "Roboto Mono",
     "Open Sans",
     "Lato",
     "Montserrat",
@@ -40,13 +74,19 @@ const CURATED_FAMILIES: &[&str] = &[
     "Nunito Sans",
     "Inter",
     "Work Sans",
+    "DM Sans",
+    "Plus Jakarta Sans",
+    "Barlow",
+    "Cabin",
+    "Quicksand",
+    "Raleway",
+    "Manrope",
+    "Rubik",               // Clean rounded sans, popular in Webtoon English TLs
+    "Fredoka",             // Playful rounded, lighter slice-of-life manhwa
     "Source Sans 3",
-    "Source Serif 4",
-    "Merriweather",
-    "Merriweather Sans",
-    "IBM Plex Sans",
-    "IBM Plex Serif",
-    "IBM Plex Mono",
+    "Exo 2",               // Sci-fi / tech manhwa
+
+    // ── Japanese ────────────────────────────────────────────────────────────
     "M PLUS 1",
     "M PLUS 1p",
     "M PLUS Rounded 1c",
@@ -56,77 +96,32 @@ const CURATED_FAMILIES: &[&str] = &[
     "Zen Maru Gothic",
     "Zen Old Mincho",
     "Shippori Mincho",
-    "Yuji Syuku",
-    "DotGothic16",
     "Hina Mincho",
+    "DotGothic16",
+    "Yuji Syuku",
+
+    // ── Korean ──────────────────────────────────────────────────────────────
     "Nanum Gothic",
     "Nanum Myeongjo",
-    "Stylish",
-    "Gamja Flower",
+    "Nanum Pen Script",
+    "Nanum Brush Script",
+    "Black Han Sans",
     "Do Hyeon",
     "Gowun Dodum",
     "Gowun Batang",
-    "Gaegu",
-    "Nanum Pen Script",
-    "Nanum Brush Script",
-    "Dokdo",
-    "East Sea Dokdo",
-    "Poor Story",
-    "Cute Font",
-    "Kirang Haerang",
-    "Hi Melody",
-    "Sunflower",
-    "Black Han Sans",
     "Jua",
-    "Comic Neue",
-    "Bangers",
-    "Patrick Hand",
-    "Caveat",
-    "Pangolin",
-    "Kalam",
-    "Indie Flower",
-    "Architects Daughter",
-    "Shadows Into Light Two",
-    "Handlee",
-    "Baloo 2",
-    "Fredoka",
-    "Bebas Neue",
-    "Oswald",
-    "Raleway",
-    "Quicksand",
-    "Manrope",
-    "Barlow",
-    "Barlow Condensed",
-    "Rubik",
-    "Mukta",
-    "Fira Sans",
-    "Inconsolata",
-    "JetBrains Mono",
-    "Fira Code",
-    "DM Sans",
-    "DM Serif Text",
-    "Plus Jakarta Sans",
-    "Cabin",
-    "Playfair Display",
-    "Lora",
-    "Crimson Text",
-    "Libre Baskerville",
-    "EB Garamond",
-    "Cardo",
-    "Cormorant Garamond",
-    "Space Grotesk",
-    "Outfit",
-    "Sora",
-    "Heebo",
-    "Titillium Web",
+    "Sunflower",
+    "Dokdo",
 ];
 
-fn has_only_allowed_subsets(entry: &GoogleFontEntry) -> bool {
-    !entry.subsets.is_empty()
-        && entry
-            .subsets
-            .iter()
-            .all(|subset| ALLOWED_SUBSETS.contains(&subset.as_str()))
+/// Returns true if the font supports at least one of our useful script subsets.
+/// Uses any() so that fonts like Roboto or Open Sans — which Google has since
+/// expanded with math/symbols/devanagari subsets — are not silently excluded.
+fn has_any_useful_subset(entry: &GoogleFontEntry) -> bool {
+    entry
+        .subsets
+        .iter()
+        .any(|subset| USEFUL_SUBSETS.contains(&subset.as_str()))
 }
 
 fn is_curated_family(family: &str) -> bool {
@@ -188,7 +183,7 @@ impl GoogleFontService {
     /// Restricts the browser list to a curated set of practical fonts and
     /// supported subsets (Latin/European + Korean/Japanese).
     pub fn is_entry_browsable(&self, entry: &GoogleFontEntry) -> bool {
-        has_only_allowed_subsets(entry) && is_curated_family(&entry.family)
+        has_any_useful_subset(entry) && is_curated_family(&entry.family)
     }
 
     /// Checks if a family has been cached to disk.
