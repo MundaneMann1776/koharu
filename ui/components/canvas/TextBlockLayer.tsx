@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef } from 'react'
+import { useRef, useLayoutEffect } from 'react'
 import { useDrag } from '@use-gesture/react'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -52,7 +52,7 @@ export function TextBlockLayer({
     >
       {textBlocks.map((block, index) => (
         <TextBlockItem
-          key={block.id ?? `fallback-${index}`}
+          key={index}
           block={block}
           index={index}
           scale={scale}
@@ -60,7 +60,7 @@ export function TextBlockLayer({
           selected={index === selectedIndex}
           interactive={interactive}
           onSelect={onSelect}
-          onUpdate={(updates) => void replaceBlock(index, updates)}
+          onUpdate={(updates) => replaceBlock(index, updates)}
         />
       ))}
     </div>
@@ -75,7 +75,7 @@ type TextBlockItemProps = {
   selected: boolean
   interactive: boolean
   onSelect: (index: number) => void
-  onUpdate: (updates: Partial<TextBlock>) => void
+  onUpdate: (updates: Partial<TextBlock>) => Promise<void>
 }
 
 const RESIZE_HANDLE_SIZE = 8
@@ -102,10 +102,29 @@ function TextBlockItem({
   const dragStart = useRef({ x: 0, y: 0, w: 0, h: 0 })
   const edgeRef = useRef<ResizeEdge | null>(null)
   const isResizeRef = useRef(false)
+  // Stays true from drag start until the server patch+refetch completes,
+  // preventing useLayoutEffect from snapping the element back to the old
+  // server position while the async update is in flight.
+  const isDragging = useRef(false)
+
+  // Sync block geometry to the DOM imperatively. This is the sole source of
+  // truth for transform/width/height — they are intentionally NOT included in
+  // the JSX style prop so React's reconciler never overwrites the values that
+  // setBox writes during an active drag.
+  useLayoutEffect(() => {
+    if (isDragging.current) return
+    const el = boxRef.current
+    if (!el) return
+    el.style.transition = 'transform 80ms ease-out'
+    el.style.transform = `translate(${block.x * scale}px, ${block.y * scale}px)`
+    el.style.width = `${block.width * scale}px`
+    el.style.height = `${block.height * scale}px`
+  }, [block.x, block.y, block.width, block.height, scale])
 
   const setBox = (x: number, y: number, w: number, h: number) => {
     const el = boxRef.current
     if (!el) return
+    el.style.transition = 'none'
     el.style.transform = `translate(${x}px, ${y}px)`
     el.style.width = `${w}px`
     el.style.height = `${h}px`
@@ -121,6 +140,7 @@ function TextBlockItem({
       }
 
       if (first) {
+        isDragging.current = true
         // Snapshot block state at drag start.
         dragStart.current = {
           x: block.x * scale,
@@ -161,20 +181,24 @@ function TextBlockItem({
         if (last) {
           isResizeRef.current = false
           edgeRef.current = null
-          onUpdate({
+          void onUpdate({
             x: Math.round((sx + dx) / scale),
             y: Math.round((sy + dy) / scale),
             width: Math.max(4, Math.round(w / scale)),
             height: Math.max(4, Math.round(h / scale)),
+          }).finally(() => {
+            isDragging.current = false
           })
         }
       } else {
         setBox(sx + mx, sy + my, sw, sh)
 
         if (last) {
-          onUpdate({
+          void onUpdate({
             x: Math.round((sx + mx) / scale),
             y: Math.round((sy + my) / scale),
+          }).finally(() => {
+            isDragging.current = false
           })
         }
       }
@@ -193,8 +217,6 @@ function TextBlockItem({
     edgeRef.current = edge
   }
 
-  const w = block.width * scale
-  const h = block.height * scale
   const spriteOffsetX = ((block.renderX ?? block.x) - block.x) * scale
   const spriteOffsetY = ((block.renderY ?? block.y) - block.y) * scale
 
@@ -207,13 +229,14 @@ function TextBlockItem({
         position: 'absolute',
         top: 0,
         left: 0,
-        transform: `translate(${block.x * scale}px, ${block.y * scale}px)`,
-        width: w,
-        height: h,
+        // transform, width, height are managed exclusively by useLayoutEffect
+        // and setBox — omitting them here prevents React's reconciler from
+        // overwriting imperative DOM updates during an active drag.
         pointerEvents: interactive ? 'auto' : 'none',
         zIndex: selected ? 20 : 10,
         touchAction: 'none',
         cursor: interactive ? 'move' : 'default',
+        willChange: 'transform',
       }}
     >
       {showSprites && (
