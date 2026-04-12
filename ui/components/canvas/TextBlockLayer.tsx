@@ -239,15 +239,17 @@ function TextBlockItem({
         willChange: 'transform',
       }}
     >
-      {showSprites && (
-        <BlockSprite
-          block={block}
-          scale={scale}
-          x={spriteOffsetX}
-          y={spriteOffsetY}
-          index={index}
-        />
-      )}
+      {/* Always mounted so the blob is prefetched while the composite rendered
+          image is visible. Visibility is toggled rather than unmounting so the
+          blob URL stays cached and appears instantly when showSprites flips. */}
+      <BlockSprite
+        block={block}
+        scale={scale}
+        x={spriteOffsetX}
+        y={spriteOffsetY}
+        index={index}
+        visible={showSprites}
+      />
 
       {/* Annotation border */}
       <div
@@ -281,12 +283,14 @@ function BlockSprite({
   x,
   y,
   index,
+  visible,
 }: {
   block: TextBlock
   scale: number
   x: number
   y: number
   index: number
+  visible: boolean
 }) {
   const { data: src } = useBlobImage(block.rendered)
   if (!src) return null
@@ -302,6 +306,7 @@ function BlockSprite({
         left: 0,
         transformOrigin: 'top left',
         transform: `translate(${x}px, ${y}px) scale(${scale})`,
+        visibility: visible ? 'visible' : 'hidden',
       }}
     />
   )
