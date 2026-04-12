@@ -30,6 +30,7 @@ import { useMaskDrawing } from '@/hooks/useMaskDrawing'
 import { useRenderBrushDrawing } from '@/hooks/useRenderBrushDrawing'
 import { useBrushLayerDisplay } from '@/hooks/useBrushLayerDisplay'
 import { useBrushUndoRedo } from '@/hooks/useBrushUndoRedo'
+import { useTextBlockUndoRedo } from '@/hooks/useTextBlockUndoRedo'
 import { useEyedropperPick } from '@/hooks/useEyedropperPick'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import {
@@ -144,6 +145,11 @@ export function Workspace() {
   // Undo/redo for brush operations
   useBrushUndoRedo({
     enabled: mode === 'brush' || mode === 'eraser',
+  })
+
+  // Undo/redo for text block create/delete (select and block modes)
+  useTextBlockUndoRedo({
+    enabled: !!currentDocument,
   })
 
   // Eyedropper: sample pixel color from the visible image layer

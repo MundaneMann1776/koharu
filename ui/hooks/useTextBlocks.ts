@@ -14,6 +14,7 @@ import {
   putTextBlocks,
 } from '@/lib/api/text-blocks/text-blocks'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { useTextBlockHistoryStore } from '@/lib/stores/textBlockHistoryStore'
 import { TextBlock } from '@/types'
 import type { DocumentDetail, TextBlockInput } from '@/lib/api/schemas'
 
@@ -194,6 +195,11 @@ export function useTextBlocks() {
   const appendBlock = async (block: TextBlock) => {
     const docId = useEditorUiStore.getState().currentDocumentId
     if (!docId) return
+    // Snapshot before creating so Cmd+Z can delete the new block.
+    const currentBlocks = document?.textBlocks ?? []
+    useTextBlockHistoryStore
+      .getState()
+      .push(docId, currentBlocks.map(toTextBlockInput))
     await createTextBlock(docId, {
       x: block.x,
       y: block.y,
@@ -201,12 +207,17 @@ export function useTextBlocks() {
       height: block.height,
     })
     await invalidateDocument(docId)
-    const currentBlocks = document?.textBlocks ?? []
     setSelectedBlockIndex(currentBlocks.length)
   }
 
   const removeBlock = async (index: number) => {
+    const docId = useEditorUiStore.getState().currentDocumentId
+    if (!docId) return
     const currentBlocks = document?.textBlocks ?? []
+    // Snapshot before deleting so Cmd+Z can restore the block.
+    useTextBlockHistoryStore
+      .getState()
+      .push(docId, currentBlocks.map(toTextBlockInput))
     const nextBlocks = currentBlocks.filter((_, idx) => idx !== index)
     await updateTextBlocks(nextBlocks)
     setSelectedBlockIndex(undefined)
