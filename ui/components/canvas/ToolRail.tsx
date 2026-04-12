@@ -222,6 +222,7 @@ function BrushToolWithPopover({
                     data-testid='brush-eyedropper-trigger'
                     aria-label={t('toolbar.eyedropper')}
                     onClick={activateEyedropper}
+                    className='border-input hover:border-border border'
                   >
                     <Pipette className='h-4 w-4' />
                   </Button>
