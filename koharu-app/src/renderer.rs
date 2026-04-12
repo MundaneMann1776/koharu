@@ -763,6 +763,46 @@ fn is_blocked_font_name(name: &str) -> bool {
         "sf compact",
         "sf mono",
         "sf pro",
+        // Script-keyword catches — blocks any system font whose name contains a
+        // non-Latin script name (covers most OS-bundled script fonts).
+        "arabic",
+        "hebrew",
+        "armenian",
+        "devanagari",
+        "myanmar",
+        "tibetan",
+        "georgian",
+        "ethiopic",
+        "sinhala",
+        "khmer",
+        "lao",
+        "tamil",
+        "telugu",
+        "kannada",
+        "malayalam",
+        "gujarati",
+        "gurmukhi",
+        "oriya",
+        // Specific macOS fonts whose names don't contain a script keyword
+        "geeza pro",     // Arabic
+        "al nile",       // Arabic
+        "al bayan",      // Arabic
+        "al tarikh",     // Arabic
+        "baghdad",       // Arabic
+        "decotype",      // Arabic
+        "kufistandardgk", // Arabic
+        "nadeem",        // Arabic
+        "mshtakan",      // Armenian
+        "sathu",         // Thai
+        "silom",         // Thai
+        "thonburi",      // Thai
+        "krungthep",     // Thai
+        "sukhumvit",     // Thai
+        "raanana",       // Hebrew
+        "gisha",         // Hebrew
+        "new peninim",   // Hebrew
+        "kohinoor devanagari", // Devanagari (subset keyword already covers)
+        "itf devanagari", // Devanagari
     ];
 
     blocked_markers.iter().any(|marker| lower.contains(marker))
