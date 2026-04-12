@@ -153,6 +153,32 @@ export function useTextBlocks() {
       const ui = useEditorUiStore.getState()
       ui.setShowRenderedImage(false)
       ui.setShowTextBlocksOverlay(true)
+
+      // Optimistic cache update: apply new geometry while preserving style,
+      // fontPrediction, detectedFontSizePx and all other fields so that the
+      // RenderControlsPanel never flashes a different font size.
+      const currentData = queryClient.getQueryData<DocumentDetail>(
+        getGetDocumentQueryKey(docId),
+      )
+      if (currentData) {
+        queryClient.setQueryData<DocumentDetail>(
+          getGetDocumentQueryKey(docId),
+          {
+            ...currentData,
+            textBlocks: currentData.textBlocks.map((b) =>
+              b.id === block.id
+                ? {
+                    ...b,
+                    x: updates.x ?? b.x,
+                    y: updates.y ?? b.y,
+                    width: updates.width ?? b.width,
+                    height: updates.height ?? b.height,
+                  }
+                : b,
+            ),
+          },
+        )
+      }
     }
 
     await patchTextBlock(docId, block.id, patch)
