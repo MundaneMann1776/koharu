@@ -9,13 +9,10 @@ import {
   Brush,
   Bandage,
   Eraser,
-  Undo2,
-  Redo2,
   Pipette,
 } from 'lucide-react'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
-import { useBrushHistoryStore } from '@/lib/stores/brushHistoryStore'
 import { ToolMode } from '@/types'
 import {
   Tooltip,
@@ -140,13 +137,7 @@ function BrushToolWithPopover({
   const setMode = useEditorUiStore((s) => s.setMode)
   const [popoverOpen, setPopoverOpen] = useState(false)
   const currentDocumentId = useEditorUiStore((s) => s.currentDocumentId)
-  const canUndo = useBrushHistoryStore((s) =>
-    currentDocumentId ? s.canUndo(currentDocumentId) : false,
-  )
-  const canRedo = useBrushHistoryStore((s) =>
-    currentDocumentId ? s.canRedo(currentDocumentId) : false,
-  )
-  const { t } = useTranslation()
+const { t } = useTranslation()
 
   const activateEyedropper = () => {
     setPopoverOpen(false)
@@ -236,27 +227,6 @@ function BrushToolWithPopover({
               </span>
             </div>
           </div>
-          {(canUndo || canRedo) && (
-            <div className='border-border space-y-1 border-t pt-3'>
-              <p className='text-muted-foreground text-xs font-medium uppercase'>
-                Shortcuts
-              </p>
-              <div className='text-muted-foreground space-y-1 text-xs'>
-                {canUndo && (
-                  <div className='flex items-center gap-2'>
-                    <Undo2 className='h-3 w-3' />
-                    <span>Cmd+Z to undo</span>
-                  </div>
-                )}
-                {canRedo && (
-                  <div className='flex items-center gap-2'>
-                    <Redo2 className='h-3 w-3' />
-                    <span>Cmd+Shift+Z to redo</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </PopoverContent>
     </Popover>
