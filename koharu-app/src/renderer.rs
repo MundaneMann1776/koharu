@@ -143,14 +143,6 @@ pub struct Renderer {
 impl Renderer {
     pub fn new() -> Result<Self> {
         let mut fontbook = FontBook::new();
-        // Auto-load custom fonts from ~/Documents/Peculiar/fonts if present.
-        if let Some(home) = dirs::home_dir() {
-            let peculiar = home.join("Documents/Peculiar/fonts");
-            if peculiar.is_dir() {
-                let count = fontbook.load_font_dir(&peculiar);
-                tracing::info!(count, "loaded custom fonts from Peculiar directory");
-            }
-        }
         let symbol_fallbacks = load_symbol_fallbacks(&mut fontbook);
         let app_data_root = koharu_runtime::default_app_data_root();
         let google_fonts = Arc::new(
@@ -172,6 +164,33 @@ impl Renderer {
             .map_err(|_| anyhow::anyhow!("Failed to lock fontbook"))?;
         let mut seen = std::collections::HashSet::new();
 
+        let is_user_visible_system_font = |family_name: &str, post_script_name: &str| {
+            let family = family_name.trim();
+            let post_script = post_script_name.trim();
+            if family.is_empty() || post_script.is_empty() {
+                return false;
+            }
+            if family.starts_with('.') || post_script.starts_with('.') {
+                return false;
+            }
+            let family_lower = family.to_lowercase();
+            let post_lower = post_script.to_lowercase();
+            let hidden_markers = [
+                "lastresort",
+                "apple color emoji ui",
+                "applesymbols",
+                "new york large",
+                "new york medium",
+                "new york small",
+                "sf compact",
+                "sf mono",
+                "sf pro",
+            ];
+            !hidden_markers
+                .iter()
+                .any(|marker| family_lower.contains(marker) || post_lower.contains(marker))
+        };
+
         // Extract the primary family name from a face, falling back to PostScript name.
         let family_name_of = |face: &FaceInfo| -> String {
             face.families
@@ -180,35 +199,16 @@ impl Renderer {
                 .unwrap_or_else(|| face.post_script_name.clone())
         };
 
-        // 1. Custom fonts — sorted alphabetically, listed first.
-        let mut custom_fonts: Vec<FontFaceInfo> = fontbook
-            .custom_families()
-            .into_iter()
-            .filter(|face| !face.post_script_name.is_empty())
-            .filter_map(|face| {
-                let family_name = family_name_of(&face);
-                if seen.insert(family_name.trim().to_lowercase()) {
-                    Some(FontFaceInfo {
-                        family_name,
-                        post_script_name: face.post_script_name,
-                        source: FontSource::Custom,
-                        category: None,
-                        cached: true,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-        custom_fonts.sort_by(|a, b| a.family_name.cmp(&b.family_name));
-
-        // 2. System fonts — all_families() includes custom ones, but `seen` blocks duplicates.
+        // 1. System fonts — custom/hidden families are excluded by filters below.
         let mut system_fonts: Vec<FontFaceInfo> = fontbook
             .all_families()
             .into_iter()
             .filter(|face| !face.post_script_name.is_empty())
             .filter_map(|face| {
                 let family_name = family_name_of(&face);
+                if !is_user_visible_system_font(&family_name, &face.post_script_name) {
+                    return None;
+                }
                 if seen.insert(family_name.trim().to_lowercase()) {
                     Some(FontFaceInfo {
                         family_name,
@@ -224,7 +224,7 @@ impl Renderer {
             .collect();
         system_fonts.sort_by(|a, b| a.family_name.cmp(&b.family_name));
 
-        // 3. Google Fonts catalog — sorted alphabetically, listed last.
+        // 2. Curated Google Fonts catalog — sorted alphabetically, listed last.
         let catalog = self.google_fonts.catalog();
         let mut google_fonts: Vec<FontFaceInfo> = catalog
             .fonts
@@ -248,9 +248,8 @@ impl Renderer {
             .collect();
         google_fonts.sort_by(|a, b| a.family_name.cmp(&b.family_name));
 
-        // Concatenate groups: custom → system → google.
-        let mut fonts = custom_fonts;
-        fonts.extend(system_fonts);
+        // Concatenate groups: system → google.
+        let mut fonts = system_fonts;
         fonts.extend(google_fonts);
 
         Ok(fonts)

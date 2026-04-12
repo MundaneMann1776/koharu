@@ -64,12 +64,13 @@ pub async fn run() -> Result<()> {
         crate::windows::enable_ansi_support().ok();
     }
 
+    let env_filter = tracing_subscriber::filter::EnvFilter::builder()
+        .with_default_directive(tracing::Level::INFO.into())
+        .from_env_lossy()
+        .add_directive("fontdb=error".parse().expect("valid log directive"));
+
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::filter::EnvFilter::builder()
-                .with_default_directive(tracing::Level::INFO.into())
-                .from_env_lossy(),
-        )
+        .with(env_filter)
         .with(crate::sentry::tracing_layer())
         .with(crate::tracing::TimingLayer::new())
         .init();

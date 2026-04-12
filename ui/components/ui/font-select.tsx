@@ -8,7 +8,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { fetchGoogleFont } from '@/lib/api/system/system'
 
@@ -25,7 +25,7 @@ type FontOption = {
 
 type FontLoadState = 'idle' | 'loading' | 'ready' | 'error'
 
-const MAX_CONCURRENT_FONT_LOADS = 3
+const MAX_CONCURRENT_FONT_LOADS = 8
 const fontLoadStateCache = new Map<string, FontLoadState>()
 const fontLoadPromises = new Map<string, Promise<void>>()
 const fontLoadQueue: Array<() => void> = []
@@ -62,7 +62,7 @@ const loadFontPreview = (
   source: string,
 ): Promise<void> => {
   if (source === 'system') return Promise.resolve()
-  if (source !== 'google' && source !== 'custom') return Promise.resolve()
+  if (source !== 'google') return Promise.resolve()
 
   const key = fontKey(source, family, postScriptName)
   const existing = fontLoadPromises.get(key)
@@ -76,10 +76,7 @@ const loadFontPreview = (
       await fetchGoogleFont(encodeURIComponent(family))
     }
 
-    const url =
-      source === 'google'
-        ? `/api/v1/fonts/google/${encodeURIComponent(family)}/file`
-        : `/api/v1/fonts/custom/${encodeURIComponent(postScriptName)}/file`
+    const url = `/api/v1/fonts/google/${encodeURIComponent(family)}/file`
     const face = new FontFace(family, `url(${url})`)
     const loaded = await face.load()
     document.fonts.add(loaded)
@@ -118,11 +115,16 @@ function useGoogleFontPreview(
   const key = fontKey(source, family, postScriptName)
   const [state, setState] = useState<FontLoadState>(() => {
     if (source === 'system') return 'ready'
+    if (source !== 'google') return 'ready'
     return fontLoadStateCache.get(key) ?? 'idle'
   })
 
   useEffect(() => {
     if (source === 'system') {
+      setState('ready')
+      return
+    }
+    if (source !== 'google') {
       setState('ready')
       return
     }
@@ -189,13 +191,9 @@ function FontRow({
         {selected && <CheckIcon className='size-3' />}
       </span>
       <span className='truncate'>{font.familyName}</span>
-      {(font.source === 'google' || font.source === 'custom') && (
+      {font.source === 'google' && (
         <span className='text-muted-foreground ml-auto shrink-0 text-[9px]'>
-          {loadState === 'loading'
-            ? '...'
-            : font.source === 'custom'
-              ? 'C'
-              : 'G'}
+          {loadState === 'loading' ? '...' : 'G'}
         </span>
       )}
     </button>
@@ -215,26 +213,17 @@ export function FontSelect({
 }: FontSelectProps) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const filtered = useMemo(() => {
     let result = options
-    if (categoryFilter) {
-      result = result.filter(
-        (f) =>
-          f.source === 'system' ||
-          f.source === 'custom' ||
-          f.category === categoryFilter,
-      )
-    }
     if (search) {
       const lower = search.toLowerCase()
       result = result.filter((f) => f.familyName.toLowerCase().includes(lower))
     }
     return result
-  }, [options, search, categoryFilter])
+  }, [options, search])
 
   const virtualizer = useVirtualizer({
     count: filtered.length,
@@ -265,7 +254,7 @@ export function FontSelect({
     const selected = filtered.find(
       (font) => font.postScriptName === value || font.familyName === value,
     )
-    const firstVisible = filtered.slice(0, MAX_VISIBLE + 2)
+    const firstVisible = filtered.slice(0, 40)
     return selected
       ? [selected, ...firstVisible.filter((font) => font !== selected)]
       : firstVisible
@@ -334,42 +323,6 @@ export function FontSelect({
           placeholder='Search fonts…'
           className='placeholder:text-muted-foreground w-full border-b bg-transparent px-2 py-1.5 text-xs outline-none'
         />
-        <ScrollArea className='border-b'>
-          <div className='flex gap-0.5 px-1.5 py-1'>
-            {['all', 'hand', 'display', 'sans', 'serif', 'mono'].map(
-              (cat, i) => {
-                const full = [
-                  'all',
-                  'handwriting',
-                  'display',
-                  'sans-serif',
-                  'serif',
-                  'monospace',
-                ][i]
-                const active =
-                  cat === 'all' ? !categoryFilter : categoryFilter === full
-                return (
-                  <button
-                    key={cat}
-                    type='button'
-                    className={cn(
-                      'shrink-0 rounded-full px-1.5 py-px text-[9px]',
-                      active
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-muted text-muted-foreground hover:bg-accent',
-                    )}
-                    onClick={() =>
-                      setCategoryFilter(cat === 'all' ? null : full)
-                    }
-                  >
-                    {cat.charAt(0).toUpperCase() + cat.slice(1)}
-                  </button>
-                )
-              },
-            )}
-          </div>
-          <ScrollBar orientation='horizontal' />
-        </ScrollArea>
         <ScrollArea
           className='relative'
           style={{ height: listHeight }}
