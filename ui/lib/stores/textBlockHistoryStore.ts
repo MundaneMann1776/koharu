@@ -13,6 +13,9 @@ type TextBlockHistoryState = {
   // Push the current state onto the undo stack before a mutating operation.
   // Clears the redo stack for that document.
   push: (docId: string, snapshot: TextBlockInput[]) => void
+  // Re-push to the undo stack WITHOUT clearing redo — used in error recovery
+  // so that a failed undo doesn't destroy the redo history.
+  restoreUndo: (docId: string, snapshot: TextBlockInput[]) => void
   popUndo: (docId: string) => TextBlockInput[] | undefined
   pushRedo: (docId: string, snapshot: TextBlockInput[]) => void
   popRedo: (docId: string) => TextBlockInput[] | undefined
@@ -33,6 +36,16 @@ export const useTextBlockHistoryStore = create<TextBlockHistoryState>(
         return {
           undoStacks: { ...state.undoStacks, [docId]: next },
           redoStacks: { ...state.redoStacks, [docId]: [] },
+        }
+      }),
+
+    restoreUndo: (docId, snapshot) =>
+      set((state) => {
+        const prev = state.undoStacks[docId] ?? []
+        const next = [...prev, snapshot].slice(-MAX_HISTORY)
+        return {
+          undoStacks: { ...state.undoStacks, [docId]: next },
+          // Intentionally does NOT clear redoStacks
         }
       }),
 

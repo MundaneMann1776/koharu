@@ -64,8 +64,10 @@ export function useTextBlockUndoRedo({ enabled }: Options) {
       await invalidate(currentDocumentId)
       useEditorUiStore.getState().setSelectedBlockIndex(undefined)
     } catch (err) {
-      // Re-push to undo so the user can retry.
-      history.push(currentDocumentId, snapshot)
+      // Restore the undo snapshot WITHOUT clearing redo so the user's redo
+      // history is preserved. Then remove the current-state redo entry we
+      // pushed above, since the operation never actually completed.
+      history.restoreUndo(currentDocumentId, snapshot)
       history.popRedo(currentDocumentId)
       useEditorUiStore.getState().showError('Failed to undo text block operation')
       console.error('[textBlockUndo] undo failed:', err)
