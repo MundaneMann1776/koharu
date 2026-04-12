@@ -52,7 +52,7 @@ export function TextBlockLayer({
     >
       {textBlocks.map((block, index) => (
         <TextBlockItem
-          key={index}
+          key={block.id ?? index}
           block={block}
           index={index}
           scale={scale}

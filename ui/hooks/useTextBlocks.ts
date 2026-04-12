@@ -149,6 +149,10 @@ export function useTextBlocks() {
       (updates.width !== undefined && updates.width !== block.width) ||
       (updates.height !== undefined && updates.height !== block.height)
 
+    const queryKey = getGetDocumentQueryKey(docId)
+    // Snapshot for rollback in case the patch request fails.
+    const previousData = queryClient.getQueryData<DocumentDetail>(queryKey)
+
     if (geometryActuallyChanged) {
       const ui = useEditorUiStore.getState()
       ui.setShowRenderedImage(false)
@@ -157,32 +161,34 @@ export function useTextBlocks() {
       // Optimistic cache update: apply new geometry while preserving style,
       // fontPrediction, detectedFontSizePx and all other fields so that the
       // RenderControlsPanel never flashes a different font size.
-      const currentData = queryClient.getQueryData<DocumentDetail>(
-        getGetDocumentQueryKey(docId),
-      )
-      if (currentData) {
-        queryClient.setQueryData<DocumentDetail>(
-          getGetDocumentQueryKey(docId),
-          {
-            ...currentData,
-            textBlocks: currentData.textBlocks.map((b) =>
-              b.id === block.id
-                ? {
-                    ...b,
-                    x: updates.x ?? b.x,
-                    y: updates.y ?? b.y,
-                    width: updates.width ?? b.width,
-                    height: updates.height ?? b.height,
-                  }
-                : b,
-            ),
-          },
-        )
+      if (previousData) {
+        queryClient.setQueryData<DocumentDetail>(queryKey, {
+          ...previousData,
+          textBlocks: previousData.textBlocks.map((b) =>
+            b.id === block.id
+              ? {
+                  ...b,
+                  x: updates.x ?? b.x,
+                  y: updates.y ?? b.y,
+                  width: updates.width ?? b.width,
+                  height: updates.height ?? b.height,
+                }
+              : b,
+          ),
+        })
       }
     }
 
-    await patchTextBlock(docId, block.id, patch)
-    await invalidateDocument(docId)
+    try {
+      await patchTextBlock(docId, block.id, patch)
+      await invalidateDocument(docId)
+    } catch (error) {
+      // Roll back the optimistic update so the cache doesn't stay stale.
+      if (previousData) {
+        queryClient.setQueryData<DocumentDetail>(queryKey, previousData)
+      }
+      throw error
+    }
   }
 
   const appendBlock = async (block: TextBlock) => {
